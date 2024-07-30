@@ -2,6 +2,7 @@ use log::error;
 use pg_pool::pg;
 use thiserror::Error;
 use uuid::Uuid;
+use crate::AuthType;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum AccountError {
@@ -11,11 +12,12 @@ pub enum AccountError {
 
 pub async fn login_trace(
     uid: &Uuid,
-    password_login: bool,
+    authn: AuthType,
     success: bool,
     force: bool
 ) -> Result<(), AccountError> {
-    let trace = pg::execute("CALL login_trace($1, $2, $3)", &[&uid, &password_login, &success])
+    let trace = pg::execute("CALL login_trace($1, $2, $3, $4)",
+                            &[&uid, &(authn as i16), &success, &force])
         .await
         .map_err(|e| {
             error!("login_trace: {e}");

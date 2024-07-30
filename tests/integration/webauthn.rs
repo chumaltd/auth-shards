@@ -13,6 +13,7 @@ use auth_shards::webauthn::{
     generate_challenge_register,
     generate_challenge_authentication,
     insert_passkey,
+    delete_password_on_register,
     delete_passkey
 };
 
@@ -87,6 +88,55 @@ async fn it_limits_inserting_keys() {
 
     let row3 = pg::query_one("SELECT count(id) from webauthns where user_id = $1", &[&uid]).await.unwrap();
     assert_eq!(row3.get::<_, i64>(0), 2);
+
+    truncate().await;
+}
+
+#[tokio::test]
+async fn it_deletes_password_on_1st_register() {
+    truncate().await;
+    let uid = Uuid::now_v7();
+    pg::execute("insert into users (id, name, email) values ($1, 'pass key', 'passkey@example.com')", &[&uid]).await.unwrap();
+
+    // No ideneties yet
+    let count1 = delete_password_on_register(&uid).await.unwrap();
+    assert_eq!(count1, 0);
+
+    pg::execute("insert into identities (user_id, digest_argon) values ($1, 'dummy_password_digest')", &[&uid]).await.unwrap();
+
+    // No passkeys guards from password deletion
+    let count2 = delete_password_on_register(&uid).await.unwrap();
+    assert_eq!(count2, 0);
+
+    let row1 = pg::query_one("select count(user_id) from identities where user_id = $1", &[&uid]).await.unwrap();
+    assert_eq!(row1.get::<_, i64>(0), 1);
+
+    let max_count: i8 = 2;
+    let device_name = "test device";
+    let passkey_json = json!({ "name": "dummy" });
+
+    insert_passkey(&[1u8], &uid, &passkey_json, &device_name, max_count).await.unwrap();
+
+    // Normal deletion
+    let count_normal = delete_password_on_register(&uid).await.unwrap();
+    assert_eq!(count_normal, 1);
+
+    let row2 = pg::query_one("select count(user_id) from identities where user_id = $1", &[&uid]).await.unwrap();
+    assert_eq!(row2.get::<_, i64>(0), 0);
+
+    // No ideneties left
+    let count4 = delete_password_on_register(&uid).await.unwrap();
+    assert_eq!(count4, 0);
+
+    insert_passkey(&[2u8], &uid, &passkey_json, &device_name, max_count).await.unwrap();
+    pg::execute("insert into identities (user_id, digest_argon) values ($1, 'dummy_password_digest')", &[&uid]).await.unwrap();
+
+    // Having >1 passkeys guards from password deletion
+    let count5 = delete_password_on_register(&uid).await.unwrap();
+    assert_eq!(count5, 0);
+
+    let row3 = pg::query_one("select count(user_id) from identities where user_id = $1", &[&uid]).await.unwrap();
+    assert_eq!(row3.get::<_, i64>(0), 1);
 
     truncate().await;
 }

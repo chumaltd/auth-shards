@@ -14,7 +14,7 @@ use webauthn_rs::{
         PublicKeyCredential, RegisterPublicKeyCredential
     }
 };
-use crate::AuthType;
+use crate::{AuthType, account::login_trace};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum WebAuthnError {
@@ -120,6 +120,23 @@ pub async fn insert_passkey(
     }
 
     Ok(())
+}
+
+pub async fn delete_password_on_register(
+    uid: &Uuid,
+) -> Result<usize, WebAuthnError> {
+    let rows = pg::query(r#"With passkeys as
+        (select count(user_id) from webauthns where user_id = $1)
+        Delete from identities using passkeys
+          where passkeys.count = 1 and identities.user_id = $1
+          returning identities.user_id"#,
+                         &[&uid])
+        .await.map_err(|e| {
+            error!("delete_password_on_register: {e}");
+            WebAuthnError::Db
+        })?;
+
+    Ok(rows.len())
 }
 
 pub async fn delete_passkey(
@@ -232,18 +249,30 @@ pub async fn authenticate_passkey(
         return Err(WebAuthnError::NoIdRegistered);
     }
 
+    let uid = rows[0].get::<_, Uuid>("uid");
+    let hard_pass = rows[0].get::<_, bool>("hard_pass");
     let cred_str = rows[0].get::<_, serde_json::Value>("credential");
+
     let cred: DiscoverableKey = serde_json::from_value(cred_str.clone())
         .map_err(|e| {
             debug!("Stored credential broken: {:?}", &e);
             WebAuthnError::Serde
         })?;
-    let auth_result = wa.finish_discoverable_authentication(&rsp, auth_st, &vec![cred.into()])
-        .map_err(|e| {
+    let authorization = wa.finish_discoverable_authentication(&rsp, auth_st, &vec![cred.into()]);
+    if authorization.is_err() {
+        login_trace(&uid, AuthType::PassKey, false, hard_pass).await.ok();
+    }
+    let auth_result = authorization.map_err(|e| {
             debug!("Passkey auth err: {:?}", &e);
             WebAuthnError::Rejected
         })?;
     debug!("AuthenticationResult reported internal count: {:?}", auth_result.counter());
+
+    login_trace(&uid, AuthType::PassKey, auth_result.user_verified(), hard_pass).await
+        .map_err(|e| {
+            error!("webauthn::authenticate: {e}");
+            WebAuthnError::Db
+        })?;
     if ! auth_result.user_verified() {
         debug!("AuthenticationResult reported not user_verified");
         return Err(WebAuthnError::Rejected);

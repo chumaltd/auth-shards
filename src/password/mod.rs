@@ -63,7 +63,7 @@ pub async fn authenticate_password(
     }
     let authenticated = verify_argon2(&password, &digest).is_ok();
 
-    login_trace(&uid, true, authenticated, must_hardpass)
+    login_trace(&uid, auth_type, authenticated, must_hardpass)
         .await.map_err(|_e| PasswordError::Db)?;
 
     match authenticated {
