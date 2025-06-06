@@ -2,6 +2,9 @@ pub mod account;
 pub mod password;
 pub mod webauthn;
 
+#[cfg(feature = "google-openid")]
+pub mod google;
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
 pub enum AuthType {
