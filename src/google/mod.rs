@@ -9,6 +9,8 @@ use openidconnect::{
     ProviderMetadata, RedirectUrl, RevocationUrl,
     EmptyAdditionalClaims, StandardErrorResponse,
     EndpointSet, EndpointMaybeSet, EndpointNotSet,
+    AuthenticationFlow, AuthorizationCode,
+    AsyncHttpClient, CsrfToken, Nonce, Scope,
     core::{
         CoreAuthDisplay, CoreClient, CoreClientAuthMethod,
         CoreClaimName, CoreClaimType, CoreGrantType,
@@ -19,8 +21,10 @@ use openidconnect::{
         CoreGenderClaim, CoreAuthPrompt,
         CoreErrorResponseType, CoreTokenResponse,
         CoreTokenIntrospectionResponse,
-        CoreRevocableToken, CoreRevocationErrorResponse
+        CoreRevocableToken, CoreRevocationErrorResponse,
+        CoreIdTokenClaims, CoreIdTokenVerifier,
     },
+    url::Url,
     reqwest,
 };
 use serde::{Serialize, Deserialize};
@@ -86,12 +90,66 @@ pub enum GoogleOpenidError {
     },
     #[error("ProviderMetadata discovery failed")]
     MetadataDiscovery,
+    #[error("token verification failed")]
+    Verification,
+}
+
+pub fn authorization_url(
+    client: &GoogleClient
+) -> (Url, CsrfToken, Nonce) {
+    client.authorize_url(
+        AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
+        CsrfToken::new_random,
+        Nonce::new_random
+    )
+        .add_scope(Scope::new("email".to_string()))
+        .add_scope(Scope::new("profile".to_string()))
+        .url()
+}
+
+pub fn valid_csrf_token(
+    state: impl Into<String>,
+    saved_secret: &str
+) -> bool {
+    let state = CsrfToken::new(state.into());
+    state.secret() == saved_secret
+}
+
+pub async fn exchange_code<'a, C>(
+    client: &'a GoogleClient,
+    http_client: &'a C,
+    code: impl Into<String>,
+) -> Result<CoreTokenResponse, GoogleOpenidError>
+where
+    C: AsyncHttpClient<'a>
+{
+    let code = AuthorizationCode::new(code.into());
+    client.exchange_code(code)
+        .map_err(|_e| GoogleOpenidError::Verification)?
+        .request_async(http_client).await
+        .map_err(|_e| GoogleOpenidError::Verification)
+}
+
+pub fn verified_token_claims(
+    client: &GoogleClient,
+    token_response: &CoreTokenResponse,
+    nonce: impl Into<String>,
+) -> Result<CoreIdTokenClaims, GoogleOpenidError>
+{
+    let nonce = Nonce::new(nonce.into());
+    let id_token_verifier: CoreIdTokenVerifier = client.id_token_verifier();
+    token_response
+        .extra_fields()
+        .id_token()
+        .expect("Cannot obtain ID token").to_owned()
+        .into_claims(&id_token_verifier, &nonce)
+        .map_err(|_e| GoogleOpenidError::Verification)
 }
 
 pub async fn client_factory(
-    google_client_id: &str,
-    google_client_secret: &str,
-    callback_path: &str
+    google_client_id: impl Into<String>,
+    google_client_secret: impl Into<String>,
+    callback_path: impl Into<String> + std::fmt::Display,
 ) -> Result<(GoogleClient, reqwest::Client), GoogleOpenidError> {
     let issuer_url = IssuerUrl::new("https://accounts.google.com".to_string())
         .map_err(|e| {
@@ -141,10 +199,10 @@ pub async fn client_factory(
             }
         })?;
 
-    let client_secret = ClientSecret::new(google_client_secret.to_string());
+    let client_secret = ClientSecret::new(google_client_secret.into());
     let client = CoreClient::from_provider_metadata(
         provider_metadata,
-        ClientId::new(google_client_id.to_string()),
+        ClientId::new(google_client_id.into()),
         Some(client_secret)
     )
         .set_redirect_uri(return_url)

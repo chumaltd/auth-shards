@@ -14,7 +14,7 @@ argon2 = "0.5"
 base64 = "0.22"
 bcrypt = { version = "0.15", optional = true }
 log = "0.4"
-openidconnect = { version = "4.0", optional = true }
+openidconnect = { version = "4.0", optional = true, features = ["reqwest"] }
 passwords = "3.1"
 pg-pool = { git = "https://github.com/chumaltd/server-util.git" }
 regex = "1.10"
