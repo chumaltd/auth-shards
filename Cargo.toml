@@ -1,13 +1,14 @@
 [package]
 name = "auth-shards"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Chuma Takahiro <co.chuma@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 [features]
-default = []
+default = ["warp"]
 compat-rails = [ "bcrypt" ]
 google-openid = [ "openidconnect" ]
+warp = [ "dep:warp" ]
 
 [dependencies]
 argon2 = "0.5"
@@ -25,4 +26,5 @@ thiserror = "1.0"
 tokio	= { version = "1.0", features = ["full"] }
 tokio-postgres = { version = "0.7", features=["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
 uuid = { version = "1", features = ["serde", "fast-rng", "v7"] }
-webauthn-rs = {version = "0.5.1", features = ["conditional-ui", "danger-allow-state-serialisation"]}
+warp = { version = "0.3.7", optional = true }
+webauthn-rs = { version = "0.5.1", features = ["conditional-ui", "danger-allow-state-serialisation"]}

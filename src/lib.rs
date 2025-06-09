@@ -1,9 +1,15 @@
 pub mod account;
 pub mod password;
 pub mod webauthn;
+mod util;
+
+pub use util::abs_path;
 
 #[cfg(feature = "google-openid")]
 pub mod google;
+
+#[cfg(feature = "warp")]
+pub mod warp;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 #[repr(u8)]
