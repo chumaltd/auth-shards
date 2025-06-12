@@ -85,7 +85,7 @@ pub async fn try_update_password(
         return Err(PasswordError::Rejected);
     }
 
-    let row = pgr::query_one(sql_get_settings(), &[&uid]).await
+    let row = pgr::query_one(SQL_GET_SETTINGS, &[&uid]).await
         .map_err(|e| {
             error!("try_update_password: {e}");
             PasswordError::Db
@@ -104,7 +104,7 @@ pub async fn try_update_password(
         error!("try_update_password: {e}");
         PasswordError::Serde
     })?;
-    let _count = pg::execute(sql_update_password(), &[&uid, &digest]).await
+    let _count = pg::execute(SQL_UPDATE_PASSWORD, &[&uid, &digest]).await
         .map_err(|e| {
             error!("try_update_password: {e}");
             PasswordError::Db
@@ -198,21 +198,19 @@ async fn search_identity(id_key: &str) -> Result<Row, PasswordError>{
     }
 }
 
-fn sql_get_settings<'a>() -> &'a str {
-    r#"SELECT coalesce(o.hard_pass, false) AS hard_pass, i.digest_argon AS password_digest
-         FROM users u
-         LEFT JOIN identities i ON u.id = i.user_id
-         LEFT JOIN orgs o ON o.id = u.org_id
-         WHERE u.id = $1"#
-}
+const SQL_GET_SETTINGS: &str = r#"
+SELECT coalesce(o.hard_pass, false) AS hard_pass, i.digest_argon AS password_digest
+  FROM users u
+    LEFT JOIN identities i ON u.id = i.user_id
+    LEFT JOIN orgs o ON o.id = u.org_id
+  WHERE u.id = $1"#;
 
-fn sql_update_password<'a>() -> &'a str {
-    r#"INSERT INTO identities (user_id, digest_argon, created_at, updated_at)
-       SELECT $1, $2, now(), now()
-       FROM users WHERE id = $1
-       ON CONFLICT (user_id)
-       DO UPDATE SET digest_argon = $2, fail = 0, updated_at = now()"#
-}
+const SQL_UPDATE_PASSWORD: &str = r#"
+INSERT INTO identities (user_id, digest_argon, created_at, updated_at)
+  SELECT $1, $2, now(), now()
+    FROM users WHERE id = $1
+  ON CONFLICT (user_id)
+    DO UPDATE SET digest_argon = $2, fail = 0, updated_at = now()"#;
 
 
 #[cfg(test)]

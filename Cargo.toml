@@ -1,11 +1,11 @@
 [package]
 name = "auth-shards"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Chuma Takahiro <co.chuma@gmail.com>"]
 edition = "2024"
 
 [features]
-default = ["warp"]
+default = []
 compat-rails = [ "bcrypt" ]
 google-openid = [ "openidconnect" ]
 warp = [ "dep:warp" ]

@@ -187,7 +187,7 @@ pub async fn generate_challenge_authentication(
     }
 
     let email = email.unwrap();
-    let rows = pgr::query_pp(sql_list_credentials(),
+    let rows = pgr::query_pp(SQL_LIST_CREDENTIALS,
                              &[Type::VARCHAR], &[&email]).await
         .map_err(|e| {
             error!("generate_challenge_authentication: {e}");
@@ -239,7 +239,7 @@ pub async fn authenticate_passkey(
             WebAuthnError::Serde
         })?;
 
-    let rows = pgr::query_pp(sql_find_user_by_credential(),
+    let rows = pgr::query_pp(SQL_FIND_USER_BY_CREDENTIAL,
                              &[Type::BYTEA], &[&raw_id]).await
         .map_err(|e| {
             error!("webauthn::authenticate: {e}");
@@ -341,20 +341,19 @@ async fn list_cred_ids(uid: &Uuid) -> Option<Vec<CredentialID>> {
          .collect())
 }
 
-fn sql_list_credentials<'a>() -> &'a str {
-    r#"SELECT u.email, w.credential FROM users u
-         INNER JOIN webauthns w ON w.user_id = u.id
-         WHERE u.email = $1"#
-}
+const SQL_LIST_CREDENTIALS: &str = r#"
+SELECT u.email, w.credential FROM users u
+  INNER JOIN webauthns w ON w.user_id = u.id
+  WHERE u.email = $1"#;
 
-fn sql_find_user_by_credential<'a>() -> &'a str {
-    r#"SELECT u.id AS uid, u.org_id AS oid, u.superuser AS su,
-         w.credential, coalesce(o.hard_pass, false) AS hard_pass
-         FROM webauthns w
-         INNER JOIN users u ON u.id = w.user_id
-         LEFT JOIN orgs o ON o.id = u.org_id
-         WHERE w.id = $1 LIMIT 1"#
-}
+const SQL_FIND_USER_BY_CREDENTIAL: &str = r#"
+SELECT u.id AS uid, u.org_id AS oid, u.superuser AS su,
+       w.credential, coalesce(o.hard_pass, false) AS hard_pass
+  FROM webauthns w
+    INNER JOIN users u ON u.id = w.user_id
+    LEFT JOIN orgs o ON o.id = u.org_id
+  WHERE w.id = $1"#;
+
 
 #[cfg(test)]
 mod tests {
