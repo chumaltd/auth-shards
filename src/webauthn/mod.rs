@@ -1,8 +1,9 @@
 use base64::prelude::*;
-use tokio_postgres::{types::Type, row::Row};
 use log::{debug, error};
 use pg_pool::{pg, pgr};
 use thiserror::Error;
+use tokio::task::JoinHandle;
+use tokio_postgres::{types::Type, row::Row};
 use uuid::Uuid;
 use webauthn_rs::{
     Webauthn, WebauthnBuilder,
@@ -14,7 +15,10 @@ use webauthn_rs::{
         PublicKeyCredential, RegisterPublicKeyCredential
     }
 };
-use crate::{AuthType, account::login_trace};
+use crate::{
+    AuthType,
+    account::{AccountError, login_trace}
+};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum WebAuthnError {
@@ -266,14 +270,20 @@ pub async fn authenticate_passkey(
             debug!("Passkey auth err: {:?}", &e);
             WebAuthnError::Rejected
         })?;
+    let user_verified = auth_result.user_verified();
     debug!("AuthenticationResult reported internal count: {:?}", auth_result.counter());
 
-    login_trace(&uid, AuthType::PassKey, auth_result.user_verified(), hard_pass).await
-        .map_err(|e| {
+    let jh: JoinHandle<Result<(), AccountError>> = tokio::spawn(async move {
+        login_trace(&uid, AuthType::PassKey, user_verified, hard_pass).await
+    });
+    if hard_pass {
+        let _ = jh.await.map_err(|e| {
             error!("webauthn::authenticate: {e}");
             WebAuthnError::Db
         })?;
-    if ! auth_result.user_verified() {
+    }
+
+    if ! user_verified {
         debug!("AuthenticationResult reported not user_verified");
         return Err(WebAuthnError::Rejected);
     }

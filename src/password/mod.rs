@@ -14,12 +14,13 @@ use passwords::PasswordGenerator;
 use pg_pool::{pg, pgr, Row};
 use regex::Regex;
 use thiserror::Error;
+use tokio::task::JoinHandle;
 use tokio_postgres::types::Type;
 use uuid::Uuid;
 
 use crate::{
     AuthType,
-    account::login_trace
+    account::{AccountError, login_trace}
 };
 
 #[cfg(feature="compat-rails")]
@@ -63,8 +64,13 @@ pub async fn authenticate_password(
     }
     let authenticated = verify_argon2(&password, &digest).is_ok();
 
-    login_trace(&uid, auth_type, authenticated, must_hardpass)
-        .await.map_err(|_e| PasswordError::Db)?;
+    let jh: JoinHandle<Result<(), AccountError>> = tokio::spawn(async move {
+        login_trace(&uid, auth_type, authenticated, must_hardpass)
+            .await
+        });
+    if must_hardpass {
+        let _ = jh.await.map_err(|_e| PasswordError::Db)?;
+    }
 
     match authenticated {
         true => Ok((auth_type, row)),

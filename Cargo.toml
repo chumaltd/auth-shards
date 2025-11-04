@@ -1,6 +1,6 @@
 [package]
 name = "auth-shards"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["Chuma Takahiro <co.chuma@gmail.com>"]
 edition = "2024"
 
