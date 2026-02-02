@@ -6,7 +6,7 @@ CREATE TABLE "public"."users" (
     "superuser" boolean NOT NULL DEFAULT false,
     "name_confirmed" boolean NOT NULL DEFAULT false,
     "session_token" character varying,
-    "mail_at" timestamp(6),
+    "mail_at" timestamp(6) NOT NULL DEFAULT '-infinity',
     "created_at" timestamp(6) NOT NULL DEFAULT now(),
     "updated_at" timestamp(6) NOT NULL DEFAULT now(),
     "act_at" timestamp(6) NOT NULL DEFAULT now(),
