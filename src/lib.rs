@@ -11,17 +11,31 @@ pub mod google;
 #[cfg(feature = "warp")]
 pub mod warp;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
-#[repr(u8)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AuthType {
-    Unknown = 0,
-    Mail = 1,
-    PasswordStrong = 2,
-    PasswordWeak = 3,
-    PasswordWeakUnmet = 4, // Org requires PasswordStrong
-    OpenidGoog = 5,
-    PassKey = 6,
-    AccessToken = 7,
+    Unknown,
+    Mail,
+    PasswordStrong,
+    PasswordWeak,
+    PasswordWeakUnmet, // Org requires PasswordStrong
+    OpenidGoog,
+    PassKey(String),
+    AccessToken,
+}
+
+impl AuthType {
+    pub fn to_u8(&self) -> u8 {
+        match self {
+            AuthType::Unknown => 0,
+            AuthType::Mail => 1,
+            AuthType::PasswordStrong => 2,
+            AuthType::PasswordWeak => 3,
+            AuthType::PasswordWeakUnmet => 4,
+            AuthType::OpenidGoog => 5,
+            AuthType::PassKey(_) => 6,
+            AuthType::AccessToken => 7,
+        }
+    }
 }
 
 impl From<u8> for AuthType {
@@ -33,7 +47,7 @@ impl From<u8> for AuthType {
             3 => AuthType::PasswordWeak,
             4 => AuthType::PasswordWeakUnmet,
             5 => AuthType::OpenidGoog,
-            6 => AuthType::PassKey,
+            6 => AuthType::PassKey("".into()),
             7 => AuthType::AccessToken,
             _ => AuthType::Unknown
         }

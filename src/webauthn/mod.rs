@@ -6,7 +6,7 @@ use tokio::task::JoinHandle;
 use tokio_postgres::{types::Type, row::Row};
 use uuid::Uuid;
 use webauthn_rs::{
-    Webauthn, WebauthnBuilder,
+    Webauthn,
     prelude::{
         CredentialID, Passkey, DiscoverableKey,
         CreationChallengeResponse,
@@ -165,7 +165,7 @@ pub async fn delete_passkey(
 }
 
 pub fn can_delete_passkey(passkey_count: usize, via: &AuthType) -> bool {
-    if *via == AuthType::Unknown || *via == AuthType::PasswordWeakUnmet {
+    if matches!(via, AuthType::Unknown | AuthType::PasswordWeakUnmet) {
         return false;
     }
 
@@ -176,7 +176,7 @@ pub fn can_delete_passkey(passkey_count: usize, via: &AuthType) -> bool {
     };
 
     match via {
-        AuthType::PassKey => false,
+        AuthType::PassKey(_) => false,
         AuthType::Mail => false,
         _ => true
     }
@@ -263,9 +263,10 @@ pub async fn authenticate_discoverable_passkey(
             debug!("Stored credential broken: {:?}", &e);
             WebAuthnError::Serde
         })?;
+    let cred_id = BASE64_URL_SAFE_NO_PAD.encode(raw_id.as_ref() as &[u8]);
     let authorization = wa.finish_discoverable_authentication(&rsp, auth_st, &vec![cred.into()]);
     if authorization.is_err() {
-        login_trace(&uid, AuthType::PassKey, false, hard_pass).await.ok();
+        login_trace(uid.clone(), AuthType::PassKey(cred_id.clone()), false, hard_pass).await.ok();
     }
     let auth_result = authorization.map_err(|e| {
             debug!("Passkey auth err: {:?}", &e);
@@ -274,8 +275,10 @@ pub async fn authenticate_discoverable_passkey(
     let user_verified = auth_result.user_verified();
     debug!("AuthenticationResult reported internal count: {:?}", auth_result.counter());
 
+    let at = AuthType::PassKey(cred_id);
+    let uid_c = uid.clone();
     let jh: JoinHandle<Result<(), AccountError>> = tokio::spawn(async move {
-        login_trace(&uid, AuthType::PassKey, user_verified, hard_pass).await
+        login_trace(uid_c, at, user_verified, hard_pass).await
     });
     if hard_pass {
         let _ = jh.await.map_err(|e| {
@@ -319,7 +322,7 @@ pub async fn authenticate_named_passkey(
 
     let uid = rows[0].get::<_, Uuid>("uid");
     let hard_pass = rows[0].get::<_, bool>("hard_pass");
-    let cred_str = rows[0].get::<_, serde_json::Value>("credential");
+    let _cred_str = rows[0].get::<_, serde_json::Value>("credential");
 
     // let cred: Passkey = serde_json::from_value(cred_str.clone())
     //     .map_err(|e| {
@@ -327,10 +330,11 @@ pub async fn authenticate_named_passkey(
     //         WebAuthnError::Serde
     //     })?;
 
+    let cred_id = BASE64_URL_SAFE_NO_PAD.encode(cred_id_bytes as &[u8]);
     let authorization = wa.finish_passkey_authentication(&rsp, &auth_st);
 
     if authorization.is_err() {
-        login_trace(&uid, AuthType::PassKey, false, hard_pass).await.ok();
+        login_trace(uid.clone(), AuthType::PassKey(cred_id.clone()), false, hard_pass).await.ok();
     }
     let auth_result = authorization.map_err(|e| {
             debug!("Passkey auth err: {:?}", &e);
@@ -339,8 +343,10 @@ pub async fn authenticate_named_passkey(
     let user_verified = auth_result.user_verified();
     debug!("AuthenticationResult reported internal count: {:?}", auth_result.counter());
 
+    let at = AuthType::PassKey(cred_id);
+    let uid_c = uid.clone();
     let jh: JoinHandle<Result<(), AccountError>> = tokio::spawn(async move {
-        login_trace(&uid, AuthType::PassKey, user_verified, hard_pass).await
+        login_trace(uid_c, at, user_verified, hard_pass).await
     });
     if hard_pass {
         let _ = jh.await.map_err(|e| {
@@ -447,7 +453,7 @@ mod tests {
 
         // Cannot delete when no passkeys
         assert_eq!(false, can_delete_passkey(0, &AuthType::PasswordWeak));
-        assert_eq!(false, can_delete_passkey(0, &AuthType::PassKey));
+        assert_eq!(false, can_delete_passkey(0, &AuthType::PassKey("".to_string())));
 
         // Can delete when 1 passkey w/other identities
         assert_eq!(true, can_delete_passkey(1, &AuthType::PasswordStrong));
@@ -455,11 +461,11 @@ mod tests {
         assert_eq!(true, can_delete_passkey(1, &AuthType::OpenidGoog));
         assert_eq!(true, can_delete_passkey(1, &AuthType::AccessToken));
         assert_eq!(false, can_delete_passkey(1, &AuthType::Mail));
-        assert_eq!(false, can_delete_passkey(1, &AuthType::PassKey));
+        assert_eq!(false, can_delete_passkey(1, &AuthType::PassKey("".to_string())));
 
         // Can delete when 2 passkeys
         assert_eq!(true, can_delete_passkey(2, &AuthType::PasswordWeak));
-        assert_eq!(true, can_delete_passkey(2, &AuthType::PassKey));
+        assert_eq!(true, can_delete_passkey(2, &AuthType::PassKey("".to_string())));
         assert_eq!(true, can_delete_passkey(2, &AuthType::Mail));
     }
 }

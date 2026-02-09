@@ -64,8 +64,9 @@ pub async fn authenticate_password(
     }
     let authenticated = verify_argon2(&password, &digest).is_ok();
 
+    let at = auth_type.clone();
     let jh: JoinHandle<Result<(), AccountError>> = tokio::spawn(async move {
-        login_trace(&uid, auth_type, authenticated, must_hardpass)
+        login_trace(uid, at, authenticated, must_hardpass)
             .await
         });
     if must_hardpass {
