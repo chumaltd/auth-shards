@@ -12,12 +12,33 @@ async function webauthn_auth(url, response) {
         return false;
     }
 
+    let credential_json;
+    if (window.PublicKeyCredential && PublicKeyCredential.parseRequestOptionsFromJSON) {
+        credential_json = await webauthn_auth_l3(response);
+    } else {
+        credential_json = await webauthn_auth_fallback(response);
+    }
+
+    return await fetch(url, {
+        body: JSON.stringify(credential_json),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+    });
+}
+
+async function webauthn_auth_l3(response) {
+    const options = PublicKeyCredential.parseRequestOptionsFromJSON(response);
+    const credential = await navigator.credentials.get(options);
+    return credential.toJSON();
+}
+
+async function webauthn_auth_fallback(response) {
     response.publicKey.challenge = base64url2ab(response.publicKey.challenge);
     response.publicKey.allowCredentials?.forEach(ac => {
         ac.id = base64url2ab(ac.id);
     });
     const pubkey_credential = await navigator.credentials.get(response);
-    const credential = {
+    return {
         id: pubkey_credential.id,
         rawId: ab2base64url(pubkey_credential.rawId),
         type: pubkey_credential.type,
@@ -29,11 +50,6 @@ async function webauthn_auth(url, response) {
         },
         extensions: pubkey_credential.extensions
     };
-    return await fetch(url, {
-        body: JSON.stringify(credential),
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-    });
 }
 
 function ab2base64url(ab) {

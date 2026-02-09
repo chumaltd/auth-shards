@@ -1,46 +1,77 @@
 async function register_passkey() {
     let publicKey;
-    let pubkey_credential;
+    let credential_json;
     try {
         const res_challenge = await fetch('/auth/webauthn/register/challenge', { method: 'POST' });
         publicKey = await res_challenge.json().then(r => r.publicKey);
+
+        // Common configuration
+        publicKey.authenticatorSelection = publicKey.authenticatorSelection || {};
         publicKey.authenticatorSelection['authenticatorAttachment'] = "platform";
         publicKey.authenticatorSelection['residentKey'] = "preferred";
         publicKey.authenticatorSelection['userVerification'] = "preferred";
-        publicKey.user.id = base64url2ab(publicKey.user.id);
-        publicKey.challenge = base64url2ab(publicKey.challenge);
-        publicKey.excludeCredentials?.forEach(ex => {
-            ex.id = base64url2ab(ex.id);
+        if (publicKey.authenticatorSelection.requireResidentKey !== undefined) {
+            delete publicKey.authenticatorSelection.requireResidentKey;
+        }
+
+        // Branching: Level 3 vs Fallback
+        if (window.PublicKeyCredential && PublicKeyCredential.parseCreationOptionsFromJSON) {
+            credential_json = await register_passkey_l3(publicKey);
+        } else {
+            credential_json = await register_passkey_fallback(publicKey);
+        }
+
+        if (!credential_json) return;
+
+        const res_register = await fetch('/auth/webauthn/register/apply', {
+            method: 'POST',
+            body: JSON.stringify(credential_json),
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Register-Device': document.querySelector('input#agent').value
+            }
         });
-        delete publicKey.authenticatorSelection.requireResidentKey;
-        console.debug(JSON.stringify(publicKey));
+        location = '/auth/account?passkey_registered';
     } catch (e) { console.error(e); }
+}
+
+async function register_passkey_l3(publicKey) {
+    console.debug("L3", JSON.stringify(publicKey));
+    try {
+        const options = PublicKeyCredential.parseCreationOptionsFromJSON({ publicKey });
+        const credential = await navigator.credentials.create(options);
+        return credential.toJSON();
+    } catch (e) {
+        alert(`Error on device: ${e}`);
+        return null;
+    }
+}
+
+async function register_passkey_fallback(publicKey) {
+    publicKey.user.id = base64url2ab(publicKey.user.id);
+    publicKey.challenge = base64url2ab(publicKey.challenge);
+    publicKey.excludeCredentials?.forEach(ex => {
+        ex.id = base64url2ab(ex.id);
+    });
+    console.debug("Fallback", JSON.stringify(publicKey));
+
+    let pubkey_credential;
     try {
         pubkey_credential = await navigator.credentials.create({ publicKey });
     } catch (e) {
         alert(`Error on device: ${e}`);
-        return
+        return null;
     }
-    try {
-        const credential = {
-            id: pubkey_credential.id,
-            rawId: ab2base64url(pubkey_credential.rawId),
-            type: pubkey_credential.type,
-            response: {
-                attestationObject: ab2base64url(pubkey_credential.response.attestationObject),
-                clientDataJSON: ab2base64url(pubkey_credential.response.clientDataJSON)
-            }
-        };
 
-        const res_register = await fetch('/auth/webauthn/register/apply', {
-            method: 'POST',
-            body: JSON.stringify(credential),
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Register-Device': document.querySelector('input#agent').value
-            }});
-        location = '/auth/account?passkey_registered';
-    } catch (e) { console.error(e); }
+    return {
+        id: pubkey_credential.id,
+        rawId: ab2base64url(pubkey_credential.rawId),
+        type: pubkey_credential.type,
+        response: {
+            attestationObject: ab2base64url(pubkey_credential.response.attestationObject),
+            clientDataJSON: ab2base64url(pubkey_credential.response.clientDataJSON)
+        }
+    };
 }
 
 function base64url2ab(base64url) {
