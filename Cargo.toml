@@ -8,23 +8,30 @@ edition = "2024"
 default = []
 compat-rails = [ "bcrypt" ]
 google-openid = [ "openidconnect" ]
-warp = [ "dep:warp" ]
+warp = [ "dep:warp", "warp/test" ]
 
 [dependencies]
+anyhow = "1.0"
+async-session = "3"
 argon2 = "0.5"
 base64 = "0.22"
 bcrypt = { version = "0.17", optional = true }
 log = "0.4"
 openidconnect = { version = "4.0", optional = true, features = ["reqwest"] }
 passwords = "3.1"
+percent-encoding = "2.3"
 pg-pool = { git = "https://github.com/chumaltd/server-util.git" }
 regex = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 server-conf = { git = "https://github.com/chumaltd/server-util.git" }
+sha2 = "0.10"
+hex = "0.4"
+subtle = "2.6"
 thiserror = "2"
 tokio	= { version = "1.0", features = ["full"] }
 tokio-postgres = { version = "0.7", features=["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
 uuid = { version = "1", features = ["serde", "fast-rng", "v7"] }
 warp = { version = ">=0.3.7, <0.5.0", optional = true }
 webauthn-rs = { version = "0.5.1", features = ["conditional-ui", "danger-allow-state-serialisation"]}
+webauthn-rs-device-catalog = "0.5.0-20230418"

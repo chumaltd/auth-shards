@@ -79,12 +79,35 @@ pub async fn try_generate_passkey(
         })
 }
 
+pub fn get_aaguid(passkey: &Passkey) -> Option<Uuid> {
+    let val = serde_json::to_value(passkey).ok()?;
+    // Passkey { cred: Credential { attestation: ParsedAttestation { metadata: AttestationMetadata { ... } } } }
+    // Enums are externally tagged by default: {"Packed": {"aaguid": "..."}}
+    let metadata = val.get("cred")?.get("attestation")?.get("metadata")?;
+
+    if let Some(packed) = metadata.get("Packed") {
+        return packed.get("aaguid").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+    }
+    if let Some(tpm) = metadata.get("Tpm") {
+        return tpm.get("aaguid").and_then(|v| v.as_str()).and_then(|s| s.parse().ok());
+    }
+
+    None
+}
+
 pub async fn register_passkey(
     uid: &Uuid,
     pass_key: &Passkey,
-    device_name: &str,
+    device_note: &str,
     max_count: u8
 ) -> Result<(), WebAuthnError> {
+    let mut device_name = device_note.to_string();
+    if let Some(aaguid) = get_aaguid(pass_key) {
+        if let Some(auth_name) = crate::resolve_aaguid_name(&aaguid) {
+            device_name = format!("{} {}", auth_name, device_note).trim().to_string();
+        }
+    }
+
     let passkey_json = serde_json::to_value(&pass_key)
         .map_err(|e| {
             error!("{:?}", e);
@@ -467,5 +490,51 @@ mod tests {
         assert_eq!(true, can_delete_passkey(2, &AuthType::PasswordWeak));
         assert_eq!(true, can_delete_passkey(2, &AuthType::PassKey("".to_string())));
         assert_eq!(true, can_delete_passkey(2, &AuthType::Mail));
+    }
+
+    #[test]
+    fn test_get_aaguid() {
+        let aaguid_str = "c53933c1-5369-4299-b1d7-d5804910ae99";
+        let mut val = serde_json::json!({
+            "cred": {
+                "cred_id": "YWJj",
+                "cred": {
+                    "type_": "ES256",
+                    "key": { "EC_EC2": { "curve": "SECP256R1", "x": "YWJj", "y": "YWJj" } }
+                },
+                "counter": 0,
+                "user_verified": true,
+                "backup_eligible": false,
+                "backup_state": false,
+                "registration_policy": "required",
+                "extensions": {},
+                "attestation": {
+                    "data": "None",
+                    "metadata": {
+                        "Packed": {
+                            "aaguid": aaguid_str
+                        }
+                    }
+                },
+                "attestation_format": "none"
+            }
+        });
+
+        let passkey: Passkey = serde_json::from_value(val.clone()).expect("Failed to parse Packed Passkey");
+        let extracted = get_aaguid(&passkey).expect("Should extract AAGUID");
+        assert_eq!(extracted.to_string(), aaguid_str);
+
+        // Test with Tpm
+        val["cred"]["attestation"]["metadata"] = serde_json::json!({
+            "Tpm": { "aaguid": aaguid_str, "firmware_version": 123 }
+        });
+        let passkey_tpm: Passkey = serde_json::from_value(val.clone()).expect("Failed to parse Tpm Passkey");
+        let extracted_tpm = get_aaguid(&passkey_tpm).expect("Should extract TPM AAGUID");
+        assert_eq!(extracted_tpm.to_string(), aaguid_str);
+
+        // Test with None
+        val["cred"]["attestation"]["metadata"] = serde_json::json!({ "None": null });
+        let passkey_none: Passkey = serde_json::from_value(val).expect("Failed to parse None Passkey");
+        assert!(get_aaguid(&passkey_none).is_none());
     }
 }

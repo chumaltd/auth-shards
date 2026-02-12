@@ -1,9 +1,12 @@
 pub mod account;
 pub mod password;
+pub mod session;
 pub mod webauthn;
 mod util;
 
 pub use util::abs_path;
+pub use util::ClientContext;
+pub use util::resolve_aaguid_name;
 
 #[cfg(feature = "google-openid")]
 pub mod google;
