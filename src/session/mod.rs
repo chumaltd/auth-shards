@@ -58,14 +58,14 @@ pub struct SessionManager {
 impl Default for SessionManager {
     fn default() -> Self {
         static DEFAULT: SessionKeys = SessionKeys {
-            id: "uid",
-            group: "org_id",
+            id: "id",
+            group: "gr",
             superuser: "su",
-            mailauth: "mailauth",
-            passkey: "passkey",
-            via: "via",
-            locked: "locked",
-            integrity: "integrity",
+            mailauth: "ma",
+            passkey: "pk",
+            via: "vi",
+            locked: "lk",
+            integrity: "ua",
         };
         Self::new(&DEFAULT)
     }
@@ -226,9 +226,9 @@ mod tests {
             brands: None, platform: None, model: None, ua: Some("ua".to_string())
         }).await.unwrap();
 
-        assert_eq!(session.get_raw("uid").unwrap().parse::<Uuid>().unwrap(), id);
-        assert_eq!(session.get_raw("via").unwrap(), AuthType::PasswordStrong.to_u8().to_string());
-        assert!(session.get_raw("org_id").is_none());
+        assert_eq!(session.get_raw("id").unwrap().parse::<Uuid>().unwrap(), id);
+        assert_eq!(session.get_raw("vi").unwrap(), AuthType::PasswordStrong.to_u8().to_string());
+        assert!(session.get_raw("gr").is_none());
         assert!(session.get_raw("su").is_none());
     }
 
@@ -249,7 +249,7 @@ mod tests {
             brands: None, platform: None, model: None, ua: Some("ua".to_string())
         }).await.unwrap();
 
-        assert_eq!(session.get_raw("org_id").unwrap().parse::<Uuid>().unwrap(), group_id);
+        assert_eq!(session.get_raw("gr").unwrap().parse::<Uuid>().unwrap(), group_id);
         assert_eq!(session.get_raw("su").unwrap(), "true");
     }
 
@@ -268,7 +268,7 @@ mod tests {
             ua: Some("ua".to_string()),
         };
         session_login((&store, &mut session), &account, AuthType::Mail, &ctx).await.unwrap();
-        assert_eq!(session.get_raw("mailauth").unwrap(), "1");
+        assert_eq!(session.get_raw("ma").unwrap(), "1");
 
         // Test PassKey
         let mut session = Session::new();
@@ -279,7 +279,7 @@ mod tests {
             ua: Some("ua".to_string()),
         };
         session_login((&store, &mut session), &account, AuthType::PassKey("key_id".into()), &ctx).await.unwrap();
-        assert_eq!(session.get_raw("passkey").unwrap(), "key_id");
+        assert_eq!(session.get_raw("pk").unwrap(), "key_id");
     }
 
     #[tokio::test]
@@ -304,9 +304,9 @@ mod tests {
         };
         session_login((&store, &mut session), &account, AuthType::PasswordWeak, &ctx).await.unwrap();
 
-        assert_eq!(session.get_raw("locked").unwrap(), "1");
+        assert_eq!(session.get_raw("lk").unwrap(), "1");
         // via should be set to PasswordWeakUnmet (4)
-        assert_eq!(session.get_raw("via").unwrap(), AuthType::PasswordWeakUnmet.to_u8().to_string());
+        assert_eq!(session.get_raw("vi").unwrap(), AuthType::PasswordWeakUnmet.to_u8().to_string());
     }
 
     #[tokio::test]
@@ -314,7 +314,7 @@ mod tests {
         let store = MemoryStore::new();
         let mut session = Session::new();
         // Set via_pre
-        session.insert_raw("via", "99".to_string());
+        session.insert_raw("vi", "99".to_string());
 
         let account = SessionAccount {
             id: Uuid::now_v7(),
@@ -328,7 +328,7 @@ mod tests {
         }).await.unwrap();
 
         // via should NOT be updated because via_pre existed
-        assert_eq!(session.get_raw("via").unwrap(), "99");
+        assert_eq!(session.get_raw("vi").unwrap(), "99");
     }
 
     #[tokio::test]
