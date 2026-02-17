@@ -537,4 +537,5 @@ mod tests {
         let passkey_none: Passkey = serde_json::from_value(val).expect("Failed to parse None Passkey");
         assert!(get_aaguid(&passkey_none).is_none());
     }
+    }
 }

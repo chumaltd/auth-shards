@@ -27,8 +27,8 @@ async function webauthn_auth(url, response) {
 }
 
 async function webauthn_auth_l3(response) {
-    const options = PublicKeyCredential.parseRequestOptionsFromJSON(response);
-    const credential = await navigator.credentials.get(options);
+    const options = PublicKeyCredential.parseRequestOptionsFromJSON(response.publicKey);
+    const credential = await navigator.credentials.get({ publicKey: options });
     return credential.toJSON();
 }
 

@@ -38,8 +38,8 @@ async function register_passkey() {
 async function register_passkey_l3(publicKey) {
     console.debug("L3", JSON.stringify(publicKey));
     try {
-        const options = PublicKeyCredential.parseCreationOptionsFromJSON({ publicKey });
-        const credential = await navigator.credentials.create(options);
+        const options = PublicKeyCredential.parseCreationOptionsFromJSON(publicKey);
+        const credential = await navigator.credentials.create({ publicKey: options });
         return credential.toJSON();
     } catch (e) {
         alert(`Error on device: ${e}`);
