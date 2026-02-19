@@ -11,7 +11,7 @@ use argon2::{
 };
 use log::error;
 use passwords::PasswordGenerator;
-use pg_pool::{pg, pgr, Row};
+use pg_pool::{pg, Row};
 use regex::Regex;
 use thiserror::Error;
 use tokio::task::JoinHandle;
@@ -92,7 +92,7 @@ pub async fn try_update_password(
         return Err(PasswordError::Rejected);
     }
 
-    let row = pgr::query_one(SQL_GET_SETTINGS, &[&uid]).await
+    let row = pg::query_one(SQL_GET_SETTINGS, &[&uid]).await
         .map_err(|e| {
             error!("try_update_password: {e}");
             PasswordError::Db
@@ -191,7 +191,7 @@ pub fn generate_passdigits() -> Option<String> {
 }
 
 async fn search_identity(id_key: &str) -> Result<Row, PasswordError>{
-    let rows = pgr::query_pp(
+    let rows = pg::query_pp(
         include_str!("get_identity.sql"),
         &[Type::VARCHAR], &[&id_key]
     ).await.map_err(|e| {
