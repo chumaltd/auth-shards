@@ -8,7 +8,7 @@ edition = "2024"
 default = []
 compat-rails = [ "bcrypt" ]
 google-openid = [ "openidconnect" ]
-warp = [ "dep:warp", "warp/test" ]
+warp = [ "dep:warp" ]
 
 [dependencies]
 anyhow = "1.0"
@@ -38,3 +38,6 @@ webauthn-rs-device-catalog = "0.5.0-20230418"
 
 [dev-dependencies]
 fs4 = "0.13.1"
+playwright-rs = "0.8.3"
+warp = "0.3"
+auth-shards = { path = ".", features = ["warp"] }

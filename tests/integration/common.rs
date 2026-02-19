@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use fs4::fs_std::FileExt;
 
+
 pub struct TestPool;
 
 /// A custom test macro that ensures the Tokio runtime is multi-threaded.
@@ -165,4 +166,70 @@ pub async fn setup_org() -> (uuid::Uuid, String) {
     pg::execute("INSERT INTO orgs (id, name) VALUES ($1, $2)",
                 &[&id, &name]).await.unwrap();
     (id, name)
+}
+
+use playwright_rs::Playwright;
+use playwright_rs::{Browser, Page};
+
+// Singletons for Playwright driver and Browser instances
+static GLOBAL_PLAYWRIGHT: tokio::sync::OnceCell<Playwright> = tokio::sync::OnceCell::const_new();
+static GLOBAL_CHROMIUM: tokio::sync::OnceCell<Option<Browser>> = tokio::sync::OnceCell::const_new();
+static GLOBAL_WEBKIT: tokio::sync::OnceCell<Option<Browser>> = tokio::sync::OnceCell::const_new();
+
+async fn get_playwright() -> &'static Playwright {
+    GLOBAL_PLAYWRIGHT.get_or_init(|| async {
+        Playwright::launch().await.expect("Failed to init playwright")
+    }).await
+}
+
+pub async fn get_chromium_page() -> Option<Page> {
+    let browser_opt = GLOBAL_CHROMIUM.get_or_init(|| async {
+        let p = get_playwright().await;
+        match p.chromium().launch().await {
+            Ok(b) => Some(b),
+            Err(e) => {
+                log::info!("Skipping chromium tests: Failed to launch browser: {:?}", e);
+                None
+            }
+        }
+    }).await;
+
+    if let Some(browser) = browser_opt {
+        Some(browser.new_page().await.expect("Failed to create chromium page"))
+    } else {
+        None
+    }
+}
+
+pub async fn get_webkit_page() -> Option<Page> {
+    let browser_opt = GLOBAL_WEBKIT.get_or_init(|| async {
+        let p = get_playwright().await;
+        match p.webkit().launch().await {
+            Ok(b) => Some(b),
+            Err(e) => {
+                log::info!("Skipping webkit tests: Failed to launch browser: {:?}", e);
+                None
+            }
+        }
+    }).await;
+
+    if let Some(browser) = browser_opt {
+        Some(browser.new_page().await.expect("Failed to create webkit page"))
+    } else {
+        None
+    }
+}
+
+pub fn start_server<F>(filter: F) -> u16
+where
+    F: warp::Filter + Clone + Send + Sync + 'static,
+    F::Extract: warp::Reply,
+{
+    let (addr, server) = warp::serve(filter)
+        .bind_with_graceful_shutdown(([127, 0, 0, 1], 0), async {
+            std::future::pending::<()>().await;
+        });
+
+    tokio::spawn(server);
+    addr.port()
 }
