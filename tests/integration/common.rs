@@ -175,6 +175,7 @@ use playwright_rs::{Browser, Page};
 static GLOBAL_PLAYWRIGHT: tokio::sync::OnceCell<Playwright> = tokio::sync::OnceCell::const_new();
 static GLOBAL_CHROMIUM: tokio::sync::OnceCell<Option<Browser>> = tokio::sync::OnceCell::const_new();
 static GLOBAL_WEBKIT: tokio::sync::OnceCell<Option<Browser>> = tokio::sync::OnceCell::const_new();
+static GLOBAL_CHROMIUM_PORT: tokio::sync::OnceCell<u16> = tokio::sync::OnceCell::const_new();
 
 async fn get_playwright() -> &'static Playwright {
     GLOBAL_PLAYWRIGHT.get_or_init(|| async {
@@ -182,10 +183,28 @@ async fn get_playwright() -> &'static Playwright {
     }).await
 }
 
-pub async fn get_chromium_page() -> Option<Page> {
+pub async fn get_chromium_page() -> Option<(Page, u16)> {
+    let port = *GLOBAL_CHROMIUM_PORT.get_or_init(|| async {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind for dynamic CDP port");
+        listener.local_addr().unwrap().port()
+    }).await;
+
     let browser_opt = GLOBAL_CHROMIUM.get_or_init(|| async {
         let p = get_playwright().await;
-        match p.chromium().launch().await {
+        let headless = std::env::var("HEADLESS").map(|v| v != "0").unwrap_or(true);
+        let slow_mo = std::env::var("SLOW_MO").ok().and_then(|v| v.parse().ok());
+
+        let mut options = playwright_rs::api::LaunchOptions::default()
+            .headless(headless)
+            .args(vec![
+                format!("--remote-debugging-port={}", port)
+            ]);
+
+        if let Some(ms) = slow_mo {
+            options = options.slow_mo(ms);
+        }
+
+        match p.chromium().launch_with_options(options).await {
             Ok(b) => Some(b),
             Err(e) => {
                 log::info!("Skipping chromium tests: Failed to launch browser: {:?}", e);
@@ -195,7 +214,8 @@ pub async fn get_chromium_page() -> Option<Page> {
     }).await;
 
     if let Some(browser) = browser_opt {
-        Some(browser.new_page().await.expect("Failed to create chromium page"))
+        let page = browser.new_page().await.expect("Failed to create chromium page");
+        Some((page, port))
     } else {
         None
     }
@@ -232,4 +252,106 @@ where
 
     tokio::spawn(server);
     addr.port()
+}
+
+pub fn start_server_on_port<F>(filter: F, port: u16) -> u16
+where
+    F: warp::Filter + Clone + Send + Sync + 'static,
+    F::Extract: warp::Reply,
+{
+    let (addr, server) = warp::serve(filter)
+        .bind_with_graceful_shutdown(([127, 0, 0, 1], port), async {
+            std::future::pending::<()>().await;
+        });
+
+    tokio::spawn(server);
+    addr.port()
+}
+
+pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Option<&str>) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
+    use futures_util::{SinkExt, StreamExt};
+
+    let client = reqwest::Client::new();
+    let resp = client.get(format!("http://127.0.0.1:{cdp_port}/json")).send().await.expect("Failed to reach CDP json endpoint");
+    let pages: Vec<serde_json::Value> = resp.json().await.expect("Failed to parse CDP json response");
+
+    let target = if let Some(hint) = url_hint {
+        pages.iter()
+            .find(|p| p["type"].as_str() == Some("page") && p["url"].as_str().map(|u| u.contains(hint)).unwrap_or(false))
+            .or_else(|| {
+                println!("[CDP] Warning: Could not find page matching hint '{hint}', falling back to first page");
+                pages.iter().find(|p| p["type"].as_str() == Some("page"))
+            })
+    } else {
+        pages.iter().find(|p| p["type"].as_str() == Some("page"))
+    };
+
+    let target = target.expect("No suitable page found in CDP");
+    let ws_url = target["webSocketDebuggerUrl"].as_str().expect("No webSocketDebuggerUrl found").to_string();
+    let target_url = target["url"].as_str().unwrap_or("unknown");
+    println!("[CDP] Targeting page: {}", target_url);
+
+    let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("Failed to connect to CDP WebSocket");
+    println!("[CDP] Connected to WebSocket: {}", ws_url);
+
+    // Helper: send a CDP command and wait for the response with the matching id,
+    // discarding any interleaved browser events (which have no "id" field).
+    async fn cdp_command(
+        ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        cmd: serde_json::Value,
+    ) -> serde_json::Value {
+        let id = cmd["id"].as_u64().expect("CDP command must have an id");
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(cmd.to_string()))
+            .await.expect("Failed to send CDP command");
+
+        // Drain messages until we find one with the matching id
+        loop {
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(10), ws.next())
+                .await
+                .expect("Timeout waiting for CDP response")
+                .expect("CDP stream ended")
+                .expect("CDP WebSocket error");
+
+            let text = msg.to_text().expect("CDP message is not text");
+            let val: serde_json::Value = serde_json::from_str(text).expect("Invalid CDP JSON");
+
+            if val.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                return val;
+            }
+            // Otherwise it's a browser event — discard and keep waiting
+        }
+    }
+
+    // Enable WebAuthn virtual authenticator environment
+    let enable_resp = cdp_command(&mut ws_stream, serde_json::json!({
+        "id": 1,
+        "method": "WebAuthn.enable",
+        "params": { "enableUI": false }
+    })).await;
+    if enable_resp.get("error").is_some() {
+        panic!("CDP WebAuthn.enable failed: {:?}", enable_resp);
+    }
+    println!("[CDP] WebAuthn.enable OK");
+
+    // Add virtual authenticator
+    let add_resp = cdp_command(&mut ws_stream, serde_json::json!({
+        "id": 2,
+        "method": "WebAuthn.addVirtualAuthenticator",
+        "params": {
+            "options": {
+                "protocol": "ctap2",
+                "transport": "usb",
+                "hasResidentKey": true,
+                "hasUserVerification": true,
+                "isUserVerified": true,
+                "automaticPresenceSimulation": true
+            }
+        }
+    })).await;
+    if add_resp.get("error").is_some() {
+        panic!("CDP WebAuthn.addVirtualAuthenticator failed: {:?}", add_resp);
+    }
+    println!("[CDP] WebAuthn.addVirtualAuthenticator OK: {:?}", add_resp["result"].get("authenticatorId"));
+
+    ws_stream
 }

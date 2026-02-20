@@ -42,7 +42,10 @@ pub async fn generate_challenge_register(
     let row = pgr::query_one(r#"SELECT u.name, u.email, count(w.id)::smallint AS keys
          FROM users u LEFT JOIN webauthns w on u.id = w.user_id
          where u.id = $1 group by u.id"#, &[&uid]).await
-        .map_err(|_e| WebAuthnError::NoIdRegistered)?;
+        .map_err(|e| {
+            debug!("{:?}", e);
+            WebAuthnError::NoIdRegistered
+        })?;
     if row.get::<_, i16>("keys") >= max_count as i16 {
         return Err(WebAuthnError::Exceeded);
     }

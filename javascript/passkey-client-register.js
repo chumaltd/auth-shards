@@ -1,4 +1,4 @@
-async function register_passkey() {
+async function register_passkey(force_fallback = false) {
     let publicKey;
     let credential_json;
     try {
@@ -15,7 +15,7 @@ async function register_passkey() {
         }
 
         // Branching: Level 3 vs Fallback
-        if (window.PublicKeyCredential && PublicKeyCredential.parseCreationOptionsFromJSON) {
+        if (!force_fallback && window.PublicKeyCredential && PublicKeyCredential.parseCreationOptionsFromJSON) {
             credential_json = await register_passkey_l3(publicKey);
         } else {
             credential_json = await register_passkey_fallback(publicKey);
@@ -36,7 +36,6 @@ async function register_passkey() {
 }
 
 async function register_passkey_l3(publicKey) {
-    console.debug("L3", JSON.stringify(publicKey));
     try {
         const options = PublicKeyCredential.parseCreationOptionsFromJSON(publicKey);
         const credential = await navigator.credentials.create({ publicKey: options });
@@ -53,7 +52,6 @@ async function register_passkey_fallback(publicKey) {
     publicKey.excludeCredentials?.forEach(ex => {
         ex.id = base64url2ab(ex.id);
     });
-    console.debug("Fallback", JSON.stringify(publicKey));
 
     let pubkey_credential;
     try {

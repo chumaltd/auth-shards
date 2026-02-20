@@ -2,6 +2,8 @@ use crate::common::{get_chromium_page, get_webkit_page};
 use playwright_rs::Page;
 use warp::Filter;
 
+mod passkey; // Register the new module
+
 async fn check_redirect(page: Page, port: u16) {
     let url = format!("http://127.0.0.1:{}/redirect", port);
     page.goto(&url, None).await.expect("Failed to goto");
@@ -12,7 +14,7 @@ async fn check_redirect(page: Page, port: u16) {
 
 crate::test! {
     async fn it_redirects_external_chromium() {
-        let page = match get_chromium_page().await {
+        let (page, _cdp_port) = match get_chromium_page().await {
             Some(p) => p,
             None => return, // Skip test
         };

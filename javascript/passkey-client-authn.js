@@ -7,13 +7,13 @@ async function load_challenge(url) {
     return await res_challenge.json();
 }
 
-async function webauthn_auth(url, response) {
+async function webauthn_auth(url, response, force_fallback = false) {
     if (!(navigator.credentials.get && await PublicKeyCredential.isConditionalMediationAvailable)) {
         return false;
     }
 
     let credential_json;
-    if (window.PublicKeyCredential && PublicKeyCredential.parseRequestOptionsFromJSON) {
+    if (!force_fallback && window.PublicKeyCredential && PublicKeyCredential.parseRequestOptionsFromJSON) {
         credential_json = await webauthn_auth_l3(response);
     } else {
         credential_json = await webauthn_auth_fallback(response);
