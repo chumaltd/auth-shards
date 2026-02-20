@@ -1,10 +1,20 @@
 use crate::common::{get_chromium_page, setup, setup_user};
-use auth_shards::webauthn::{generate_challenge_authentication, generate_challenge_register};
+use auth_shards::webauthn::{
+    delete_passkey,
+    generate_challenge_authentication,
+    generate_challenge_register,
+    WebAuthnError,
+};
+use base64::prelude::*;
+use pg_pool::pg;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use warp::Filter;
-use webauthn_rs::prelude::CreationChallengeResponse as Challenge;
+use webauthn_rs::prelude::{
+    CreationChallengeResponse as Challenge,
+    Passkey
+};
 
 // Mock State to hold challenge data between requests
 pub(crate) struct MockState {
@@ -19,7 +29,7 @@ pub(crate) struct WebAuthnTestError;
 impl warp::reject::Reject for WebAuthnTestError {}
 
 crate::test! {
-async fn it_registers_and_authenticates_passkey() {
+    async fn it_registers_and_authenticates_passkey() {
         let _pool = setup().await;
         let (uid1, uname1) = setup_user().await;
         let email1 = format!("{uname1}@example.com");
@@ -56,6 +66,11 @@ async fn it_registers_and_authenticates_passkey() {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         assert!(page.url().contains("passkey_registered"), "[L3] Redirect failed, stuck on {}", page.url());
+        let row1 = pg::query_one("select credential from webauthns where user_id = $1",
+                                 &[&uid1]).await.unwrap();
+        let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
+        assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
+
 
         // --- Fallback path (User 2) ---
         {
@@ -73,6 +88,10 @@ async fn it_registers_and_authenticates_passkey() {
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
         assert!(page.url().contains("passkey_registered"), "[Fallback] Redirect failed, stuck on {}", page.url());
+        let row2 = pg::query_one("select credential from webauthns where user_id = $1",
+                                 &[&uid2]).await.unwrap();
+        let passkey2: Passkey = serde_json::from_value(row2.get::<_, serde_json::Value>(0)).unwrap();
+        assert!(passkey2.get_public_key().get_openssl_pkey().is_ok());
 
         // --- Authentication (User 1) ---
         {
@@ -89,6 +108,14 @@ async fn it_registers_and_authenticates_passkey() {
         }
         assert!(page.url().contains("authenticated"), "Auth 1 redirect failed, stuck on {}", page.url());
 
+        // --- Guard from deletion (User 1) ---
+        let id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id().as_slice());
+        assert_eq!(Err(WebAuthnError::Rejected), delete_passkey(&id, &uid1).await);
+        let row1 = pg::query_one("select credential from webauthns where user_id = $1",
+                                 &[&uid1]).await.unwrap();
+        let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
+        assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
+
         // --- Authentication (User 2) ---
         {
             let mut lock = state.lock().unwrap();
@@ -97,16 +124,24 @@ async fn it_registers_and_authenticates_passkey() {
         page.goto(&auth_url, None).await.unwrap();
         let btn_auth2 = page.locator("#btn-auth2").await;
         if btn_auth2.count().await.unwrap_or(0) > 0 {
-             btn_auth2.click(None).await.unwrap();
+            btn_auth2.click(None).await.unwrap();
         } else {
-             // If btn-auth is reused
-             page.locator("#btn-auth").await.click(None).await.unwrap();
+            // If btn-auth is reused
+            page.locator("#btn-auth").await.click(None).await.unwrap();
         }
         for _ in 0..60 {
             if page.url().contains("authenticated") { break; }
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
         assert!(page.url().contains("authenticated"), "Auth 2 redirect failed, stuck on {}", page.url());
+
+        // --- Guard from deletion (User 2) ---
+        let id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id().as_slice());
+        assert_eq!(Err(WebAuthnError::Rejected), delete_passkey(&id, &uid2).await);
+        let row2 = pg::query_one("select credential from webauthns where user_id = $1",
+                                 &[&uid2]).await.unwrap();
+        let passkey2: Passkey = serde_json::from_value(row2.get::<_, serde_json::Value>(0)).unwrap();
+        assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
     }
 }
 
@@ -190,7 +225,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
     let route_html_reg = warp::path("register.html").map(move || warp::reply::html(html_reg));
     let route_html_login = warp::path("login.html").map(move || warp::reply::html(html_login));
 
-        let js_reg = std::fs::read_to_string("javascript/passkey-client-register.js").expect("Failed to read JS");
+    let js_reg = std::fs::read_to_string("javascript/passkey-client-register.js").expect("Failed to read JS");
     let route_js_reg = warp::path("passkey-client-register.js")
         .map(move || warp::reply::with_header(js_reg.clone(), "Content-Type", "application/javascript"));
 
@@ -255,7 +290,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
 
                 Ok::<_, warp::Rejection>(warp::reply::json(&json!({ "status": "ok" })))
-                    }
+            }
         });
 
     let state_clone2 = state.clone();
