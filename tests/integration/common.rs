@@ -1,3 +1,4 @@
+use log::debug;
 use pg_pool::pg;
 use std::sync::Arc;
 use std::fs::{File, OpenOptions};
@@ -279,7 +280,7 @@ pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Optio
         pages.iter()
             .find(|p| p["type"].as_str() == Some("page") && p["url"].as_str().map(|u| u.contains(hint)).unwrap_or(false))
             .or_else(|| {
-                println!("[CDP] Warning: Could not find page matching hint '{hint}', falling back to first page");
+                debug!("[CDP] Warning: Could not find page matching hint '{hint}', falling back to first page");
                 pages.iter().find(|p| p["type"].as_str() == Some("page"))
             })
     } else {
@@ -289,10 +290,10 @@ pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Optio
     let target = target.expect("No suitable page found in CDP");
     let ws_url = target["webSocketDebuggerUrl"].as_str().expect("No webSocketDebuggerUrl found").to_string();
     let target_url = target["url"].as_str().unwrap_or("unknown");
-    println!("[CDP] Targeting page: {}", target_url);
+    debug!("[CDP] Targeting page: {}", target_url);
 
     let (mut ws_stream, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("Failed to connect to CDP WebSocket");
-    println!("[CDP] Connected to WebSocket: {}", ws_url);
+    debug!("[CDP] Connected to WebSocket: {}", ws_url);
 
     // Helper: send a CDP command and wait for the response with the matching id,
     // discarding any interleaved browser events (which have no "id" field).
@@ -331,7 +332,7 @@ pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Optio
     if enable_resp.get("error").is_some() {
         panic!("CDP WebAuthn.enable failed: {:?}", enable_resp);
     }
-    println!("[CDP] WebAuthn.enable OK");
+    debug!("[CDP] WebAuthn.enable OK");
 
     // Add virtual authenticator
     let add_resp = cdp_command(&mut ws_stream, serde_json::json!({
@@ -351,7 +352,7 @@ pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Optio
     if add_resp.get("error").is_some() {
         panic!("CDP WebAuthn.addVirtualAuthenticator failed: {:?}", add_resp);
     }
-    println!("[CDP] WebAuthn.addVirtualAuthenticator OK: {:?}", add_resp["result"].get("authenticatorId"));
+    debug!("[CDP] WebAuthn.addVirtualAuthenticator OK: {:?}", add_resp["result"].get("authenticatorId"));
 
     ws_stream
 }

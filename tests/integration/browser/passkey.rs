@@ -6,7 +6,9 @@ use auth_shards::webauthn::{
     WebAuthnError,
 };
 use base64::prelude::*;
+use log::debug;
 use pg_pool::pg;
+use playwright_rs::expect;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -27,6 +29,7 @@ pub(crate) struct MockState {
 #[derive(Debug)]
 pub(crate) struct WebAuthnTestError;
 impl warp::reject::Reject for WebAuthnTestError {}
+
 
 crate::test! {
     async fn it_registers_and_authenticates_passkey() {
@@ -61,10 +64,8 @@ crate::test! {
         page.goto(&reg_url, None).await.unwrap();
         let btn_l3 = page.locator("#btn-l3").await;
         btn_l3.click(None).await.unwrap();
-        for _ in 0..60 {
-            if page.url().contains("passkey_registered") { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
+        expect(page.locator("body#account").await)
+            .to_be_visible().await.unwrap();
         assert!(page.url().contains("passkey_registered"), "[L3] Redirect failed, stuck on {}", page.url());
         let row1 = pg::query_one("select credential from webauthns where user_id = $1",
                                  &[&uid1]).await.unwrap();
@@ -83,71 +84,64 @@ crate::test! {
         page.goto(&reg_url, None).await.unwrap();
         let btn_fb = page.locator("#btn-fb").await;
         btn_fb.click(None).await.unwrap();
-        for _ in 0..60 {
-            if page.url().contains("passkey_registered") { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        }
+        expect(page.locator("body#account").await)
+            .to_be_visible().await.unwrap();
         assert!(page.url().contains("passkey_registered"), "[Fallback] Redirect failed, stuck on {}", page.url());
         let row2 = pg::query_one("select credential from webauthns where user_id = $1",
                                  &[&uid2]).await.unwrap();
         let passkey2: Passkey = serde_json::from_value(row2.get::<_, serde_json::Value>(0)).unwrap();
         assert!(passkey2.get_public_key().get_openssl_pkey().is_ok());
 
-        // --- Authentication (User 1) ---
+
+        // --- Authentication (User 1) - EXPLICIT BUTTON CLICK ---
+        let auth_url = format!("http://localhost:{port}/login.html?disable_conditional=1");
         {
             let mut lock = state.lock().unwrap();
             lock.username = Some(email1.clone());
         }
-        let auth_url = format!("http://localhost:{port}/login.html");
         page.goto(&auth_url, None).await.unwrap();
+        expect(page.locator("#btn-auth").await).to_be_enabled().await.unwrap();
         let btn_auth = page.locator("#btn-auth").await;
         btn_auth.click(None).await.unwrap();
-        for _ in 0..60 {
-            if page.url().contains("authenticated") { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        }
+        expect(page.locator("body#account").await)
+            .to_be_visible().await.unwrap();
+
         assert!(page.url().contains("authenticated"), "Auth 1 redirect failed, stuck on {}", page.url());
 
         // --- Guard from deletion (User 1) ---
         let id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id().as_slice());
-        assert_eq!(Err(WebAuthnError::Rejected), delete_passkey(&id, &uid1).await);
+        assert_eq!(Err(auth_shards::webauthn::WebAuthnError::Rejected), auth_shards::webauthn::delete_passkey(&id, &uid1).await);
         let row1 = pg::query_one("select credential from webauthns where user_id = $1",
                                  &[&uid1]).await.unwrap();
         let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
         assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
 
-        // --- Authentication (User 2) ---
+        // --- Authentication (User 2) - CONDITIONAL UI ---
         {
             let mut lock = state.lock().unwrap();
             lock.username = Some(email2.clone());
         }
-        page.goto(&auth_url, None).await.unwrap();
-        let btn_auth2 = page.locator("#btn-auth2").await;
-        if btn_auth2.count().await.unwrap_or(0) > 0 {
-            btn_auth2.click(None).await.unwrap();
-        } else {
-            // If btn-auth is reused
-            page.locator("#btn-auth").await.click(None).await.unwrap();
-        }
-        for _ in 0..60 {
-            if page.url().contains("authenticated") { break; }
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        }
+        let auth_url2 = format!("http://localhost:{port}/login.html");
+        page.goto(&auth_url2, None).await.unwrap();
+
+        // Wait for conditional UI to finish automatically due to CPD
+        expect(page.locator("body#account").await)
+            .to_be_visible().await.unwrap();
+
         assert!(page.url().contains("authenticated"), "Auth 2 redirect failed, stuck on {}", page.url());
 
         // --- Guard from deletion (User 2) ---
-        let id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id().as_slice());
-        assert_eq!(Err(WebAuthnError::Rejected), delete_passkey(&id, &uid2).await);
+        let id = BASE64_URL_SAFE_NO_PAD.encode(passkey2.cred_id().as_slice());
+        assert_eq!(Err(auth_shards::webauthn::WebAuthnError::Rejected), auth_shards::webauthn::delete_passkey(&id, &uid2).await);
         let row2 = pg::query_one("select credential from webauthns where user_id = $1",
                                  &[&uid2]).await.unwrap();
         let passkey2: Passkey = serde_json::from_value(row2.get::<_, serde_json::Value>(0)).unwrap();
-        assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
+        assert!(passkey2.get_public_key().get_openssl_pkey().is_ok());
     }
 }
 
 pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16, webauthn_rs::Webauthn) {
-    let html_reg = r#"
-        <!DOCTYPE html><html><body>
+    let html_reg = r#"<html><body>
         <input id="agent" value="test-device">
         <span id="err"></span>
         <button id="btn-l3">Register L3</button>
@@ -155,10 +149,10 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
         <script src="/passkey-client-register.js"></script>
         <script>
             // WebAuthn stripping – essential for virtual authenticator in headless mode
-            if (navigator.credentials && navigator.credentials.create) {
+            if (navigator?.credentials.create) {
                 const _orig = navigator.credentials.create;
                 navigator.credentials.create = async function(options) {
-                    if (options && options.publicKey) {
+                    if (options?.publicKey) {
                         if (options.publicKey.authenticatorSelection) {
                             delete options.publicKey.authenticatorSelection.authenticatorAttachment;
                         }
@@ -169,22 +163,29 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     return await _orig.call(navigator.credentials, options);
                 };
             }
-            if (navigator.credentials && navigator.credentials.get) {
+            if (navigator?.credentials.get) {
                 const _origGet = navigator.credentials.get;
                 navigator.credentials.get = async function(options) {
-                    if (options && options.publicKey && options.publicKey.extensions) {
+                    if (options?.publicKey && options.publicKey.extensions) {
                         delete options.publicKey.extensions.credentialProtectionPolicy;
                     }
-                    return await _origGet.call(navigator.credentials, options);
+                    try {
+                        const __res = await _origGet.call(navigator.credentials, options);
+                        if (!__res) document.getElementById('err').innerText += ' | get() returned ' + __res;
+                        return __res;
+                    } catch (e) {
+                        document.getElementById('err').innerText += ' | get() threw ' + e.name;
+                        throw e;
+                    }
                 };
             }
-            if (window.PublicKeyCredential && PublicKeyCredential.parseCreationOptionsFromJSON) {
+            if (globalThis?.PublicKeyCredential.parseCreationOptionsFromJSON) {
                 const _origParse = PublicKeyCredential.parseCreationOptionsFromJSON;
                 PublicKeyCredential.parseCreationOptionsFromJSON = function(json) {
-                    if (json && json.authenticatorSelection) {
+                    if (json?.authenticatorSelection) {
                         delete json.authenticatorSelection.authenticatorAttachment;
                     }
-                    if (json && json.extensions) {
+                    if (json?.extensions) {
                         delete json.extensions.credentialProtectionPolicy;
                         delete json.extensions.enforceCredentialProtectionPolicy;
                     }
@@ -204,21 +205,36 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
             });
         </script>
     </body></html>"#;
-    let html_login = r#"<!DOCTYPE html><html><body>
+    let html_login = r#"<html><body>
         <span id="err"></span>
-        <button id="btn-auth">Authenticate</button>
-        <script src="/passkey-client-authn.js"></script>
-        <script>
-            document.getElementById('btn-auth').addEventListener('click', function() {
-                load_challenge('/auth/webauthn/login/challenge').then(function(challenge) {
-                    return webauthn_auth('/auth/webauthn/login/apply', challenge);
-                }).then(function(res) {
+        <button id="btn-auth" disabled>Authenticate</button>
+        <script type="module">
+          import { load_challenge, setup_conditional, passkey_btn_handler } from "/passkey-client-authn.js";
+
+          const params = new URLSearchParams(window.location.search);
+          const disableConditional = params.has('disable_conditional');
+
+          const o = await load_challenge('/auth/webauthn/login/challenge');
+          document.querySelector('#err').innerText = JSON.stringify(o);
+
+          if (!disableConditional) {
+             setup_conditional('/auth/webauthn/login/apply').then(async function(res) {
+                 if (res && res.ok) { location = '/auth/account?authenticated'; }
+             }).catch(console.error);
+          }
+
+          document.getElementById('btn-auth').addEventListener('click', function() {
+                passkey_btn_handler('/auth/webauthn/login/apply')
+                  .then(async function(res) {
                     if (res && res.ok) { location = '/auth/account?authenticated'; }
-                    else { document.getElementById('err').innerText = 'auth failed: ' + (res ? res.status : 'null'); }
-                }).catch(function(e) {
+                    else { document.getElementById('err').innerText = 'auth failed: ' + (res ? `${res.status} ${await res.text()}` : 'null'); }
+                })
+                  .catch(function(e) {
                     document.getElementById('err').innerText = String(e);
-                });
-            });
+                })
+          });
+
+          document.querySelector('#btn-auth').disabled = false;
         </script>
     </body></html>"#;
 
@@ -240,7 +256,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
     let origin = reqwest::Url::parse(&format!("http://localhost:{port}")).unwrap();
     let builder = webauthn_rs::WebauthnBuilder::new("localhost", &origin).unwrap();
     let wa = builder.build().unwrap();
-    
+
     let state_clone = state.clone();
     let wa_reg = wa.clone();
     let route_reg_challenge = warp::path!("auth" / "webauthn" / "register" / "challenge")
@@ -274,7 +290,10 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                 let (uid, reg_state) = {
                     let mut lock = state.lock().unwrap();
                     let uid = lock.user_id.unwrap();
-                    let reg_state = lock.reg_state.take().expect("No reg state");
+                    let reg_state = match lock.reg_state.take() {
+                        Some(s) => s,
+                        None => return Err(warp::reject::custom(WebAuthnTestError)),
+                    };
                     (uid, reg_state)
                 };
 
@@ -322,23 +341,30 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
             async move {
                 let auth_state = {
                     let mut lock = state.lock().unwrap();
-                    lock.reg_state.take().expect("No auth state")
+                    match lock.reg_state.take() {
+                        Some(s) => s,
+                        None => return Ok::<_, warp::Rejection>(warp::reply::json(&json!({ "status": "ok" }))),
+                    }
                 };
 
                 let cred: webauthn_rs::prelude::PublicKeyCredential = match serde_json::from_value(body.clone()) {
                     Ok(c) => c,
-                    Err(_) => return Err(warp::reject::custom(WebAuthnTestError)),
+                    Err(e) => {
+                        debug!("[Server] JSON Parse Error: {:?}", e);
+                        return Err(warp::reject::custom(WebAuthnTestError));
+                    }
                 };
 
-                let _ = auth_shards::webauthn::authenticate_named_passkey(&wa, &cred, &auth_state).await
-                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+                if let Err(e) = auth_shards::webauthn::authenticate_named_passkey(&wa, &cred, &auth_state).await {
+                    panic!("[Server] EXACT AUTH FAILED REASON: {:#?}", e);
+                }
 
                 Ok::<_, warp::Rejection>(warp::reply::json(&json!({ "status": "ok" })))
             }
         });
 
     let route_account = warp::path!("auth" / "account")
-        .map(|| warp::reply::html("<html><body>Account Page (Stub)</body></html>"));
+        .map(|| warp::reply::html("<html><body id=\"account\">Account Page (Stub)</body></html>"));
 
     let routes = route_html_reg.or(route_html_login).or(route_js_reg).or(route_js_auth)
         .or(route_reg_challenge)

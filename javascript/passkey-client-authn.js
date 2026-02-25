@@ -1,43 +1,82 @@
-async function load_challenge(url) {
+let authnOptions = null;
+let abortController = new AbortController();
+const l3_available = !!(globalThis.PublicKeyCredential && globalThis.PublicKeyCredential.parseRequestOptionsFromJSON);
+
+export async function load_challenge(url_challenge, force_fallback = false) {
     if (!(navigator.credentials.get && await PublicKeyCredential.isConditionalMediationAvailable)) {
         return false;
     }
 
-    const res_challenge = await fetch(url, { method: 'POST' });
-    return await res_challenge.json();
+    const res_challenge = await fetch(url_challenge, { method: 'POST' });
+    const response = await res_challenge.json();
+    authnOptions = parse_request(response, force_fallback);
+    return authnOptions;
 }
 
-async function webauthn_auth(url, response, force_fallback = false) {
-    if (!(navigator.credentials.get && await PublicKeyCredential.isConditionalMediationAvailable)) {
-        return false;
-    }
+export async function setup_conditional(url_auth, force_fallback = false) {
+    if (!authnOptions) return;
 
-    let credential_json;
-    if (!force_fallback && window.PublicKeyCredential && PublicKeyCredential.parseRequestOptionsFromJSON) {
-        credential_json = await webauthn_auth_l3(response);
+    try {
+        const credential = await navigator.credentials.get({
+            publicKey: authnOptions.publicKey,
+            mediation: 'conditional',
+            signal: abortController.signal
+        });
+        return await submit_credential(url_auth, credential, force_fallback);
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error(err);
+    }
+}
+
+export async function passkey_btn_handler(url_auth, force_fallback = false) {
+    if (!authnOptions) return;
+
+    abortController?.abort();
+    abortController = new AbortController();
+    try {
+        const options = {
+            publicKey: authnOptions.publicKey,
+            mediation: 'optional',
+            signal: abortController.signal
+        };
+        const credential = await navigator.credentials.get(options);
+        return await submit_credential(url_auth, credential, force_fallback);
+    } catch (err) {
+        if (err.name !== 'AbortError') console.error(err);
+    }
+}
+
+function parse_request(response, force_fallback = false) {
+    if (!force_fallback && l3_available) {
+        return {
+            publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(response.publicKey)
+        };
     } else {
-        credential_json = await webauthn_auth_fallback(response);
+        response.publicKey.challenge = base64url2ab(response.publicKey.challenge);
+        response.publicKey.allowCredentials?.forEach(ac => {
+            ac.id = base64url2ab(ac.id);
+        });
+        return response;
     }
-
-    return await fetch(url, {
-        body: JSON.stringify(credential_json),
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-    });
 }
 
-async function webauthn_auth_l3(response) {
-    const options = PublicKeyCredential.parseRequestOptionsFromJSON(response.publicKey);
-    const credential = await navigator.credentials.get({ publicKey: options });
-    return credential.toJSON();
+async function submit_credential(url, credential, force_fallback = false) {
+    if (credential) {
+        let credential_json;
+        if (!force_fallback && l3_available) {
+            credential_json = credential.toJSON();
+        } else {
+            credential_json = serialize_fallback(credential);
+        }
+        return await fetch(url, {
+            body: JSON.stringify(credential_json),
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+    }
 }
 
-async function webauthn_auth_fallback(response) {
-    response.publicKey.challenge = base64url2ab(response.publicKey.challenge);
-    response.publicKey.allowCredentials?.forEach(ac => {
-        ac.id = base64url2ab(ac.id);
-    });
-    const pubkey_credential = await navigator.credentials.get(response);
+function serialize_fallback(pubkey_credential) {
     return {
         id: pubkey_credential.id,
         rawId: ab2base64url(pubkey_credential.rawId),
