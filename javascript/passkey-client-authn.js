@@ -1,19 +1,19 @@
 let authnOptions = null;
 let abortController = new AbortController();
-const l3_available = !!(globalThis.PublicKeyCredential && globalThis.PublicKeyCredential.parseRequestOptionsFromJSON);
+const is_l3_available = () => !!globalThis.PublicKeyCredential?.parseRequestOptionsFromJSON;
 
-export async function load_challenge(url_challenge, force_fallback = false) {
+export async function load_challenge(url_challenge) {
     if (!(navigator.credentials.get && await PublicKeyCredential.isConditionalMediationAvailable)) {
         return false;
     }
 
     const res_challenge = await fetch(url_challenge, { method: 'POST' });
     const response = await res_challenge.json();
-    authnOptions = parse_request(response, force_fallback);
+    authnOptions = parse_request(response);
     return authnOptions;
 }
 
-export async function setup_conditional(url_auth, force_fallback = false) {
+export async function setup_conditional(url_auth) {
     if (!authnOptions) return;
 
     try {
@@ -22,13 +22,13 @@ export async function setup_conditional(url_auth, force_fallback = false) {
             mediation: 'conditional',
             signal: abortController.signal
         });
-        return await submit_credential(url_auth, credential, force_fallback);
+        return await submit_credential(url_auth, credential);
     } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
     }
 }
 
-export async function passkey_btn_handler(url_auth, force_fallback = false) {
+export async function passkey_btn_handler(url_auth) {
     if (!authnOptions) return;
 
     abortController?.abort();
@@ -40,14 +40,14 @@ export async function passkey_btn_handler(url_auth, force_fallback = false) {
             signal: abortController.signal
         };
         const credential = await navigator.credentials.get(options);
-        return await submit_credential(url_auth, credential, force_fallback);
+        return await submit_credential(url_auth, credential);
     } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
     }
 }
 
-function parse_request(response, force_fallback = false) {
-    if (!force_fallback && l3_available) {
+function parse_request(response) {
+    if (is_l3_available()) {
         return {
             publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(response.publicKey)
         };
@@ -60,10 +60,10 @@ function parse_request(response, force_fallback = false) {
     }
 }
 
-async function submit_credential(url, credential, force_fallback = false) {
+async function submit_credential(url, credential) {
     if (credential) {
         let credential_json;
-        if (!force_fallback && l3_available) {
+        if (is_l3_available()) {
             credential_json = credential.toJSON();
         } else {
             credential_json = serialize_fallback(credential);

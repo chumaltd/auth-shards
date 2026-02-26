@@ -1,4 +1,4 @@
-async function register_passkey(force_fallback = false) {
+async function register_passkey() {
     let publicKey;
     let credential_json;
     try {
@@ -14,8 +14,7 @@ async function register_passkey(force_fallback = false) {
             delete publicKey.authenticatorSelection.requireResidentKey;
         }
 
-        // Branching: Level 3 vs Fallback
-        if (!force_fallback && window.PublicKeyCredential && PublicKeyCredential.parseCreationOptionsFromJSON) {
+        if (globalThis.PublicKeyCredential?.parseCreationOptionsFromJSON) {
             credential_json = await register_passkey_l3(publicKey);
         } else {
             credential_json = await register_passkey_fallback(publicKey);
