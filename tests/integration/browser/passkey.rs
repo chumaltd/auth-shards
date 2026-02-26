@@ -1,4 +1,4 @@
-use crate::common::{get_chromium_page, setup, setup_user};
+use crate::common::{get_chromium_page, setup, setup_user, setup_console_tracker, assert_no_console_errors};
 use auth_shards::webauthn::{
     delete_passkey,
     generate_challenge_authentication,
@@ -67,6 +67,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     let reg_url = format!("http://localhost:{port}/register.html?{fallback_param}");
 
     page.goto(&reg_url, None).await.unwrap();
+    setup_console_tracker(&page).await;
     let _ws_stream = crate::common::setup_chromium_virtual_authenticator(cdp_port, Some("localhost")).await;
 
     page.goto(&reg_url, None).await.unwrap();
@@ -116,6 +117,8 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
         .to_be_visible().await.unwrap();
 
     assert!(page.url().contains("authenticated"), "Auth 2 redirect failed, stuck on {}", page.url());
+
+    assert_no_console_errors(&page).await;
 }
 
 pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16, webauthn_rs::Webauthn) {

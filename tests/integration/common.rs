@@ -356,3 +356,66 @@ pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Optio
 
     ws_stream
 }
+
+pub async fn setup_console_tracker(page: &Page) {
+    // Clear any previous errors from sessionStorage at the start of a test run
+    let _ = page.evaluate::<serde_json::Value, ()>("sessionStorage.removeItem('playwright-console-errors')", None).await;
+
+    let script = r#"
+        (function() {
+            // Re-intercept console.error
+            const _error = console.error;
+            console.error = function(...args) {
+                const msg = args.map(a => {
+                    try {
+                        return (typeof a === 'object') ? JSON.stringify(a) : String(a);
+                    } catch(e) { return String(a); }
+                }).join(' ');
+
+                let errors = sessionStorage.getItem('playwright-console-errors') || '';
+                errors += (errors ? '\n' : '') + msg;
+                sessionStorage.setItem('playwright-console-errors', errors);
+
+                const div = document.getElementById('playwright-console-errors');
+                if (div) div.innerText = errors;
+
+                _error.apply(console, args);
+            };
+
+            // Create/update div if it doesn't exist (e.g. after navigation)
+            function updateDiv() {
+                let div = document.getElementById('playwright-console-errors');
+                if (!div) {
+                    div = document.createElement('div');
+                    div.id = 'playwright-console-errors';
+                    div.style.display = 'none';
+                    document.documentElement.appendChild(div);
+                }
+                div.innerText = sessionStorage.getItem('playwright-console-errors') || '';
+            }
+
+            if (document.body) updateDiv();
+            const observer = new MutationObserver(() => {
+                if (document.body && !document.getElementById('playwright-console-errors')) {
+                    updateDiv();
+                }
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+            updateDiv();
+        })();
+    "#;
+    page.add_init_script(script).await.expect("Failed to add init script");
+    // Ensure it's injected if already on a page
+    let _ = page.evaluate::<(), ()>(script, None).await;
+}
+
+pub async fn assert_no_console_errors(page: &Page) {
+    let text = page
+        .evaluate::<serde_json::Value, String>("sessionStorage.getItem('playwright-console-errors') || ''", None)
+        .await
+        .unwrap_or_default();
+
+    if !text.is_empty() {
+        panic!("Console errors detected:\n{}", text);
+    }
+}
