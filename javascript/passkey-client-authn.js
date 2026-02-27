@@ -13,7 +13,7 @@ export async function load_challenge(url_challenge) {
     return authnOptions;
 }
 
-export async function setup_conditional(url_auth) {
+export async function setup_conditional(url_auth, dom_form = null, input_key = "credential") {
     if (!authnOptions) return;
 
     try {
@@ -22,13 +22,13 @@ export async function setup_conditional(url_auth) {
             mediation: 'conditional',
             signal: abortController.signal
         });
-        return await submit_credential(url_auth, credential);
+        return submit_credential(url_auth, credential, dom_form, input_key);
     } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
     }
 }
 
-export async function passkey_btn_handler(url_auth) {
+export async function passkey_btn_handler(url_auth, dom_form = null, input_key = "credential") {
     if (!authnOptions) return;
 
     abortController?.abort();
@@ -40,7 +40,7 @@ export async function passkey_btn_handler(url_auth) {
             signal: abortController.signal
         };
         const credential = await navigator.credentials.get(options);
-        return await submit_credential(url_auth, credential);
+        return submit_credential(url_auth, credential, dom_form, input_key);
     } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
     }
@@ -60,7 +60,7 @@ function parse_request(response) {
     }
 }
 
-async function submit_credential(url, credential) {
+async function submit_credential(url, credential, dom_form = null, input_key = "credential") {
     if (credential) {
         let credential_json;
         if (is_l3_available()) {
@@ -68,6 +68,16 @@ async function submit_credential(url, credential) {
         } else {
             credential_json = serialize_fallback(credential);
         }
+        if(dom_form && input_key) {
+            try {
+              dom_form[input_key].value = JSON.stringify(credential_json);
+	    } catch (e) {
+              throw `HTMLform setup: ${e}`;
+	    }
+            dom_form.submit();
+            return;
+        }
+
         return await fetch(url, {
             body: JSON.stringify(credential_json),
             method: 'POST',
