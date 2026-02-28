@@ -11,7 +11,7 @@ export async function load_challenge(url_challenge) {
         .then(r => parse_request(r.publicKey));
 
     // Common configuration
-    registerOptions.authenticatorSelection = publicKey.authenticatorSelection || {};
+    registerOptions.authenticatorSelection = registerOptions.authenticatorSelection || {};
     registerOptions.authenticatorSelection['authenticatorAttachment'] = "platform";
     registerOptions.authenticatorSelection['residentKey'] = "preferred";
     registerOptions.authenticatorSelection['userVerification'] = "preferred";
@@ -25,8 +25,9 @@ export async function load_challenge(url_challenge) {
 export async function register_passkey(url_register, dom_form = null, input_key = "credential") {
     if (!registerOptions) return;
 
+    let credential;
     try {
-        const credential = await navigator.credentials.create({ publicKey: registerOptions });
+        credential = await navigator.credentials.create({ publicKey: registerOptions });
     } catch (e) {
         alert(`Error on device: ${e}`);
         return;
@@ -60,7 +61,7 @@ async function submit_credential(url_register, credential, dom_form = null, inpu
     }
     credential_json = JSON.stringify(credential_json);
 
-    if(dom_form && input_key) {
+    if (dom_form && input_key) {
         try {
             dom_form[input_key].value = credential_json;
         } catch (e) {

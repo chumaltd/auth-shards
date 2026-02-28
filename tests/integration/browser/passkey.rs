@@ -1,4 +1,4 @@
-use crate::common::{get_chromium_page, setup, setup_user, setup_console_tracker, assert_no_console_errors};
+use crate::common::{get_chromium_page, setup, setup_user, setup_console_tracker};
 use auth_shards::webauthn::{
     delete_passkey,
     generate_challenge_authentication,
@@ -73,6 +73,11 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     page.goto(&reg_url, None).await.unwrap();
     let btn_l3 = page.locator("#btn-register").await;
     btn_l3.click(None).await.unwrap();
+
+    // Check for errors early before expect timeout
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    crate::assert_no_console_errors!(&page);
+
     expect(page.locator("body#account").await)
         .to_be_visible().await.unwrap();
     assert!(page.url().contains("passkey_registered"), "[L3] Redirect failed, stuck on {}", page.url());
@@ -91,6 +96,11 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     expect(page.locator("#btn-auth").await).to_be_enabled().await.unwrap();
     let btn_auth = page.locator("#btn-auth").await;
     btn_auth.click(None).await.unwrap();
+
+    // Check for errors early
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    crate::assert_no_console_errors!(&page);
+
     expect(page.locator("body#account").await)
         .to_be_visible().await.unwrap();
 
@@ -113,12 +123,15 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     page.goto(&auth_url2, None).await.unwrap();
 
     // Wait for conditional UI to finish automatically due to CPD
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    crate::assert_no_console_errors!(&page);
+
     expect(page.locator("body#account").await)
         .to_be_visible().await.unwrap();
 
     assert!(page.url().contains("authenticated"), "Auth 2 redirect failed, stuck on {}", page.url());
 
-    assert_no_console_errors(&page).await;
+    crate::assert_no_console_errors!(&page);
 }
 
 pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16, webauthn_rs::Webauthn) {

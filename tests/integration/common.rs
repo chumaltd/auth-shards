@@ -368,6 +368,9 @@ pub async fn setup_console_tracker(page: &Page) {
             console.error = function(...args) {
                 const msg = args.map(a => {
                     try {
+                        if (a instanceof Error) {
+                            return a.stack || a.message || String(a);
+                        }
                         return (typeof a === 'object') ? JSON.stringify(a) : String(a);
                     } catch(e) { return String(a); }
                 }).join(' ');
@@ -382,14 +385,27 @@ pub async fn setup_console_tracker(page: &Page) {
                 _error.apply(console, args);
             };
 
+            window.addEventListener('error', e => {
+                if (e.error) {
+                    console.error('Global Error:', e.error);
+                } else {
+                    console.error('Global Error:', e.message);
+                }
+            });
+            window.addEventListener('unhandledrejection', e => {
+                console.error('Unhandled Promise Rejection:', e.reason);
+            });
+
             // Create/update div if it doesn't exist (e.g. after navigation)
             function updateDiv() {
+                let parent = document.body || document.documentElement;
+                if (!parent) return;
                 let div = document.getElementById('playwright-console-errors');
                 if (!div) {
                     div = document.createElement('div');
                     div.id = 'playwright-console-errors';
                     div.style.display = 'none';
-                    document.documentElement.appendChild(div);
+                    parent.appendChild(div);
                 }
                 div.innerText = sessionStorage.getItem('playwright-console-errors') || '';
             }
@@ -400,7 +416,7 @@ pub async fn setup_console_tracker(page: &Page) {
                     updateDiv();
                 }
             });
-            observer.observe(document.documentElement, { childList: true, subtree: true });
+            observer.observe(document, { childList: true, subtree: true });
             updateDiv();
         })();
     "#;
@@ -409,13 +425,18 @@ pub async fn setup_console_tracker(page: &Page) {
     let _ = page.evaluate::<(), ()>(script, None).await;
 }
 
-pub async fn assert_no_console_errors(page: &Page) {
-    let text = page
-        .evaluate::<serde_json::Value, String>("sessionStorage.getItem('playwright-console-errors') || ''", None)
+pub async fn get_console_errors(page: &Page) -> String {
+    page.evaluate::<serde_json::Value, String>("sessionStorage.getItem('playwright-console-errors') || ''", None)
         .await
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
-    if !text.is_empty() {
-        panic!("Console errors detected:\n{}", text);
+#[macro_export]
+macro_rules! assert_no_console_errors {
+    ($page:expr) => {
+        let text = crate::common::get_console_errors($page).await;
+        if !text.is_empty() {
+            panic!("Console errors detected:\n{}", text);
+        }
     }
 }
