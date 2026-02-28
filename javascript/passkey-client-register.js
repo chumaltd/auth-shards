@@ -1,65 +1,86 @@
-async function register_passkey() {
-    let publicKey;
-    let credential_json;
+let registerOptions = null;
+const is_l3_available = () => !!globalThis.PublicKeyCredential?.parseCreationOptionsFromJSON;
+
+export async function load_challenge(url_challenge) {
+    if (!(navigator.credentials.create && await PublicKeyCredential.isConditionalMediationAvailable)) {
+        return false;
+    }
+
+    const res = await fetch(url_challenge, { method: 'POST' });
+    registerOptions = await res.json()
+        .then(r => parse_request(r.publicKey));
+
+    // Common configuration
+    registerOptions.authenticatorSelection = publicKey.authenticatorSelection || {};
+    registerOptions.authenticatorSelection['authenticatorAttachment'] = "platform";
+    registerOptions.authenticatorSelection['residentKey'] = "preferred";
+    registerOptions.authenticatorSelection['userVerification'] = "preferred";
+    if (registerOptions.authenticatorSelection.requireResidentKey !== undefined) {
+        delete registerOptions.authenticatorSelection.requireResidentKey;
+    }
+
+    return registerOptions;
+}
+
+export async function register_passkey(url_register, dom_form = null, input_key = "credential") {
+    if (!registerOptions) return;
+
     try {
-        const res_challenge = await fetch('/auth/webauthn/register/challenge', { method: 'POST' });
-        publicKey = await res_challenge.json().then(r => r.publicKey);
-
-        // Common configuration
-        publicKey.authenticatorSelection = publicKey.authenticatorSelection || {};
-        publicKey.authenticatorSelection['authenticatorAttachment'] = "platform";
-        publicKey.authenticatorSelection['residentKey'] = "preferred";
-        publicKey.authenticatorSelection['userVerification'] = "preferred";
-        if (publicKey.authenticatorSelection.requireResidentKey !== undefined) {
-            delete publicKey.authenticatorSelection.requireResidentKey;
-        }
-
-        if (globalThis.PublicKeyCredential?.parseCreationOptionsFromJSON) {
-            credential_json = await register_passkey_l3(publicKey);
-        } else {
-            credential_json = await register_passkey_fallback(publicKey);
-        }
-
-        if (!credential_json) return;
-
-        const res_register = await fetch('/auth/webauthn/register/apply', {
-            method: 'POST',
-            body: JSON.stringify(credential_json),
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Register-Device': document.querySelector('input#agent').value
-            }
-        });
-        location = '/auth/account?passkey_registered';
+        const credential = await navigator.credentials.create({ publicKey: registerOptions });
+    } catch (e) {
+        alert(`Error on device: ${e}`);
+        return;
+    }
+    try {
+        return await submit_credential(url_register, credential, dom_form, input_key);
     } catch (e) { console.error(e); }
 }
 
-async function register_passkey_l3(publicKey) {
-    try {
-        const options = PublicKeyCredential.parseCreationOptionsFromJSON(publicKey);
-        const credential = await navigator.credentials.create({ publicKey: options });
-        return credential.toJSON();
-    } catch (e) {
-        alert(`Error on device: ${e}`);
-        return null;
+function parse_request(publicKey) {
+    if (is_l3_available()) {
+        return PublicKeyCredential.parseCreationOptionsFromJSON(publicKey);
     }
-}
 
-async function register_passkey_fallback(publicKey) {
     publicKey.user.id = base64url2ab(publicKey.user.id);
     publicKey.challenge = base64url2ab(publicKey.challenge);
     publicKey.excludeCredentials?.forEach(ex => {
         ex.id = base64url2ab(ex.id);
     });
+    return publicKey;
+}
 
-    let pubkey_credential;
-    try {
-        pubkey_credential = await navigator.credentials.create({ publicKey });
-    } catch (e) {
-        alert(`Error on device: ${e}`);
-        return null;
+async function submit_credential(url_register, credential, dom_form = null, input_key = "credential") {
+    if (!credential) return;
+
+    let credential_json;
+    if (is_l3_available()) {
+        credential_json = credential.toJSON();
+    } else {
+        credential_json = serialize_fallback(credential);
+    }
+    credential_json = JSON.stringify(credential_json);
+
+    if(dom_form && input_key) {
+        try {
+            dom_form[input_key].value = credential_json;
+        } catch (e) {
+            throw `HTMLform setup: ${e}`;
+        }
+        dom_form.submit();
+        return;
     }
 
+    return await fetch(url_register, {
+        method: 'POST',
+        body: credential_json,
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Register-Device': document.querySelector('input#agent')?.value
+        }
+    });
+}
+
+function serialize_fallback(pubkey_credential) {
     return {
         id: pubkey_credential.id,
         rawId: ab2base64url(pubkey_credential.rawId),

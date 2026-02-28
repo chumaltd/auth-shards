@@ -125,8 +125,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
     let html_reg = r#"<html><body>
         <input id="agent" value="test-device">
         <span id="err"></span>
-        <button id="btn-register">Register L3</button>
-        <script src="/passkey-client-register.js"></script>
+        <button id="btn-register">Register</button>
         <script>
             const params = new URLSearchParams(globalThis.location.search);
             const forceFallback = params.has('force_fallback');
@@ -177,12 +176,19 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     return _origParse.call(PublicKeyCredential, json);
                 };
             }
+        </script>
+        <script type="module">
+          import { load_challenge, register_passkey } from "/passkey-client-register.js";
 
-            document.getElementById('btn-register').addEventListener('click', function() {
-                register_passkey().catch(function(e) {
-                    document.getElementById('err').innerText = String(e);
-                });
+          const t = await load_challenge('/auth/webauthn/register/challenge');
+          document.querySelector('#btn-register').addEventListener('click', function() {
+            register_passkey('/auth/webauthn/register/apply')
+            .then(function(res) {
+              location = '/auth/account?passkey_registered';
+            }).catch(function(e) {
+              console.error(e);
             });
+          })
         </script>
     </body></html>"#;
     let html_login = r#"<html><body>
