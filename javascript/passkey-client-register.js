@@ -1,6 +1,12 @@
 let registerOptions = null;
 const is_l3_available = () => !!globalThis.PublicKeyCredential?.parseCreationOptionsFromJSON;
 
+export class PostError extends Error {
+    static {
+        this.prototype.name = "PostError";
+    }
+}
+
 export async function load_challenge(url_challenge) {
     if (!(navigator.credentials.create && await PublicKeyCredential.isConditionalMediationAvailable)) {
         return false;
@@ -22,19 +28,40 @@ export async function load_challenge(url_challenge) {
     return registerOptions;
 }
 
-export async function register_passkey(url_register, dom_form = null, input_key = "credential") {
+export function redirect_on_error(error, redirect_path = "#") {
+              switch(error.name) {
+              case 'NotSupportedError':
+                  console.error(`${error.name}: Device cannot register passkey: ${error.massage}`);
+                  location.replace(`${redirect_path}?passkey_not_supported`);
+                  break;
+              case 'NotReadableError':
+                  console.error(`${error.name}: Device refused registration: ${error.massage}`);
+                  location.replace(`${redirect_path}?passkey_not_readable`);
+                  break;
+              case 'NotAllowedError':
+                  console.error(`${error.name}: Passkey duplicated or cancelled: ${error.massage}`);
+                  location.replace(`${redirect_path}?passkey_not_allowed`);
+                  break;
+              case 'InvalidStateError':
+                  console.error(`${error.name}: Passkey duplicated: ${error.massage}`);
+                  location.replace(`${redirect_path}?passkey_invalid_state`);
+                  break;
+              case 'PostError':
+                  console.error(`${error.name}: Server communication failed: ${error.massage}`);
+                  location.replace(`${redirect_path}?passkey_post_failure`);
+              default:
+                  throw error;
+              }
+}
+
+export async function register_passkey(endpoint, input_key = "credential") {
+    if (!endpoint instanceof HTMLElement && !typeof endpoint == 'string') {
+        throw new Error('endpoint should be URL string or form DOM.');
+    }
     if (!registerOptions) return;
 
-    let credential;
-    try {
-        credential = await navigator.credentials.create({ publicKey: registerOptions });
-    } catch (e) {
-        alert(`Error on device: ${e}`);
-        return;
-    }
-    try {
-        return await submit_credential(url_register, credential, dom_form, input_key);
-    } catch (e) { console.error(e); }
+    const credential = await navigator.credentials.create({ publicKey: registerOptions });
+    return await submit_credential(endpoint, credential, input_key);
 }
 
 function parse_request(publicKey) {
@@ -50,9 +77,18 @@ function parse_request(publicKey) {
     return publicKey;
 }
 
-async function submit_credential(url_register, credential, dom_form = null, input_key = "credential") {
+async function submit_credential(endpoint, credential, input_key = "credential") {
     if (!credential) return;
 
+    let dom_form = null;
+    let url_register = null;
+    if (endpoint instanceof HTMLElement) {
+        dom_form = endpoint;
+    } else if (typeof endpoint == 'string') {
+        url_register = endpoint;
+    } else {
+        throw new Error('endpoint should be URL string or form DOM.');
+    }
     let credential_json;
     if (is_l3_available()) {
         credential_json = credential.toJSON();
@@ -65,7 +101,7 @@ async function submit_credential(url_register, credential, dom_form = null, inpu
         try {
             dom_form[input_key].value = credential_json;
         } catch (e) {
-            throw `HTMLform setup: ${e}`;
+            throw new Error(`HTMLform setup failed`, { cause: e });
         }
         dom_form.submit();
         return;
@@ -78,7 +114,8 @@ async function submit_credential(url_register, credential, dom_form = null, inpu
             'Content-Type': 'application/json',
             'X-Register-Device': document.querySelector('input#agent')?.value
         }
-    });
+    })
+        .catch(e => { throw new PostError("Posting to server failed", { cause: e }); });
 }
 
 function serialize_fallback(pubkey_credential) {

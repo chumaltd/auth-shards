@@ -13,7 +13,10 @@ export async function load_challenge(url_challenge) {
     return authnOptions;
 }
 
-export async function setup_conditional(url_auth, dom_form = null, input_key = "credential") {
+export async function setup_conditional(endpoint, input_key = "credential") {
+    if (!endpoint instanceof HTMLElement && !typeof endpoint == 'string') {
+        throw new Error('endpoint should be URL string or form DOM.');
+    }
     if (!authnOptions) return;
 
     try {
@@ -22,13 +25,16 @@ export async function setup_conditional(url_auth, dom_form = null, input_key = "
             mediation: 'conditional',
             signal: abortController.signal
         });
-        return submit_credential(url_auth, credential, dom_form, input_key);
+        return submit_credential(endpoint, credential, input_key);
     } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
     }
 }
 
-export async function passkey_btn_handler(url_auth, dom_form = null, input_key = "credential") {
+export async function passkey_btn_handler(endpoint, input_key = "credential") {
+    if (!endpoint instanceof HTMLElement && !typeof endpoint == 'string') {
+        throw new Error('endpoint should be URL string or form DOM.');
+    }
     if (!authnOptions) return;
 
     abortController?.abort();
@@ -40,7 +46,7 @@ export async function passkey_btn_handler(url_auth, dom_form = null, input_key =
             signal: abortController.signal
         };
         const credential = await navigator.credentials.get(options);
-        return submit_credential(url_auth, credential, dom_form, input_key);
+        return submit_credential(endpoint, credential, input_key);
     } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
     }
@@ -60,30 +66,39 @@ function parse_request(response) {
     }
 }
 
-async function submit_credential(url, credential, dom_form = null, input_key = "credential") {
-    if (credential) {
-        let credential_json;
-        if (is_l3_available()) {
-            credential_json = credential.toJSON();
-        } else {
-            credential_json = serialize_fallback(credential);
-        }
-        if(dom_form && input_key) {
-            try {
-              dom_form[input_key].value = JSON.stringify(credential_json);
-	    } catch (e) {
-              throw `HTMLform setup: ${e}`;
-	    }
-            dom_form.submit();
-            return;
-        }
+async function submit_credential(endpoint, credential, input_key = "credential") {
+    if (!credential) return;
 
-        return await fetch(url, {
-            body: JSON.stringify(credential_json),
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-        });
+    let dom_form = null;
+    let url = null;
+    if (endpoint instanceof HTMLElement) {
+        dom_form = endpoint;
+    } else if (typeof endpoint === 'string') {
+        url = endpoint;
+    } else {
+        throw new Error('endpoint should be URL string or form DOM.');
     }
+    let credential_json;
+    if (is_l3_available()) {
+        credential_json = credential.toJSON();
+    } else {
+        credential_json = serialize_fallback(credential);
+    }
+    if(dom_form && input_key) {
+        try {
+            dom_form[input_key].value = JSON.stringify(credential_json);
+        } catch (e) {
+            throw `HTMLform setup: ${e}`;
+        }
+        dom_form.submit();
+        return;
+    }
+
+    return await fetch(url, {
+        body: JSON.stringify(credential_json),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+    });
 }
 
 function serialize_fallback(pubkey_credential) {
