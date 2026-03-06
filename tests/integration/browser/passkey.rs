@@ -374,6 +374,6 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
         .or(route_auth_apply)
         .or(route_account);
 
-    crate::common::start_server_on_port(routes, port);
+    crate::common::start_server_on_port(routes, port).await;
     (port, wa)
 }

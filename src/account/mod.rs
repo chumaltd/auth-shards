@@ -16,7 +16,7 @@ pub async fn login_trace(
     success: bool,
     force: bool
 ) -> Result<(), AccountError> {
-    let trace = pg::execute("CALL login_trace($1, $2, $3, $4)",
+    let trace = pg::execute("CALL public.login_trace($1, $2, $3, $4)",
                             &[&uid, &(authn.to_u8() as i16), &success, &force])
         .await
         .map_err(|e| {

@@ -22,7 +22,7 @@ crate::test! {
         let route = warp::path("redirect")
             .map(|| auth_shards::warp::redirect_external("https://example.com/target").unwrap());
 
-        let port = crate::common::start_server(route);
+        let port = crate::common::start_server(route).await;
 
         check_redirect(page, port).await;
     }
@@ -36,7 +36,7 @@ crate::test! {
         let route = warp::path("redirect")
             .map(|| auth_shards::warp::redirect_external("https://example.com/target").unwrap());
 
-        let port = crate::common::start_server(route);
+        let port = crate::common::start_server(route).await;
 
         check_redirect(page, port).await;
     }

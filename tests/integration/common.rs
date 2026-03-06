@@ -3,6 +3,7 @@ use pg_pool::pg;
 use std::sync::Arc;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+use tokio::net::TcpListener;
 use fs4::fs_std::FileExt;
 
 
@@ -105,9 +106,8 @@ pub async fn setup() -> Arc<TestPool> {
                 rt.block_on(truncate());
             }
 
-            if !pids.contains(&my_pid) {
-                pids.push(my_pid);
-            }
+            // Track each active test instance, even within the same PID.
+            pids.push(my_pid);
             write_pids(file, &pids);
         });
     }).await.expect("Task failed");
@@ -241,32 +241,38 @@ pub async fn get_webkit_page() -> Option<Page> {
     }
 }
 
-pub fn start_server<F>(filter: F) -> u16
+pub async fn start_server<F>(filter: F) -> u16
 where
     F: warp::Filter + Clone + Send + Sync + 'static,
     F::Extract: warp::Reply,
 {
-    let (addr, server) = warp::serve(filter)
-        .bind_with_graceful_shutdown(([127, 0, 0, 1], 0), async {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let port = addr.port();
+    drop(listener);
+    let server = warp::serve(filter)
+        .bind(([127, 0, 0, 1], port)).await
+        .graceful(async {
             std::future::pending::<()>().await;
-        });
-
+        }).run();
     tokio::spawn(server);
-    addr.port()
+
+    port
 }
 
-pub fn start_server_on_port<F>(filter: F, port: u16) -> u16
+pub async fn start_server_on_port<F>(filter: F, port: u16) -> u16
 where
     F: warp::Filter + Clone + Send + Sync + 'static,
     F::Extract: warp::Reply,
 {
-    let (addr, server) = warp::serve(filter)
-        .bind_with_graceful_shutdown(([127, 0, 0, 1], port), async {
+    let server = warp::serve(filter)
+        .bind(([127, 0, 0, 1], port)).await
+        .graceful(async {
             std::future::pending::<()>().await;
-        });
-
+        }).run();
     tokio::spawn(server);
-    addr.port()
+
+    port
 }
 
 pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Option<&str>) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
@@ -302,7 +308,7 @@ pub async fn setup_chromium_virtual_authenticator(cdp_port: u16, url_hint: Optio
         cmd: serde_json::Value,
     ) -> serde_json::Value {
         let id = cmd["id"].as_u64().expect("CDP command must have an id");
-        ws.send(tokio_tungstenite::tungstenite::Message::Text(cmd.to_string()))
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(cmd.to_string().into()))
             .await.expect("Failed to send CDP command");
 
         // Drain messages until we find one with the matching id

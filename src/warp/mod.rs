@@ -1,10 +1,10 @@
 use log::error;
+use url::{Url, Position};
 use regex::Regex;
 use warp::{
-    redirect::see_other,
     reject,
     reply::{self, Reply},
-    http::Uri,
+    http::{header, status::StatusCode},
     Filter, Rejection
 };
 pub mod rejection;
@@ -68,40 +68,47 @@ pub fn validate_api(
     }
 }
 
-pub fn redirect_no_cache(path: impl Into<String>) -> Result<reply::Response, Rejection> {
-    let redirect_path: Uri = ensure_abs(path).try_into().map_err(|e| {
-        error!("{e}");
-        reject::reject()
-    })?;
+pub fn redirect_internal(path: impl Into<String>) -> Result<reply::Response, Rejection> {
+    let disposal_base = Url::parse("https://example.com").unwrap();
+    let url: Url = disposal_base.join(&path.into())
+        .map_err(|e| {
+            error!("{e}");
+            reject::reject()
+        })?;
 
-    Ok(reply::with_header(
-        see_other(redirect_path),
-        "cache-control",
-        "no-cache"
-    ).into_response())
+    let redirect_path = url[Position::BeforePath..].to_string();
+
+    let reply = reply::with_header(
+        StatusCode::SEE_OTHER,
+        header::LOCATION,
+        redirect_path
+    );
+    Ok(append_no_cache_headers(reply).into_response())
 }
 
 pub fn redirect_external(url: impl Into<String>) -> Result<reply::Response, Rejection> {
-    let redirect_url: Uri = url.into().try_into().map_err(|e| {
+    let redirect_url: Url = Url::parse(&url.into()).map_err(|e| {
         error!("{e}");
         reject::reject()
     })?;
 
-    Ok(reply::with_header(
-        see_other(redirect_url),
-        "cache-control",
-        "no-cache"
-    ).into_response())
+    let reply = reply::with_header(
+        StatusCode::SEE_OTHER,
+        header::LOCATION,
+        String::from(redirect_url)
+    );
+    Ok(append_no_cache_headers(reply).into_response())
 }
 
-
-fn ensure_abs(path: impl Into<String>) -> String {
-    let re = Regex::new(r"^/*([^/].*)$").unwrap();
-    let path = path.into();
-    let path = re.captures(&path)
-        .and_then(|cap| cap.get(1).map(|m| m.as_str()))
-        .unwrap_or("");
-    format!("/{path}")
+pub fn append_no_cache_headers(reply: impl Reply) -> impl Reply {
+    let reply = reply::with_header(
+        reply,
+        header::CACHE_CONTROL,
+        "no-store, max-age=0, must-revalidate"
+    );
+    let reply = reply::with_header(reply, "Pragma", "no-cache");
+    let reply = reply::with_header(reply, header::EXPIRES, "0");
+    reply::with_header(reply, "X-Content-Type-Options", "nosniff")
 }
 
 #[cfg(test)]
