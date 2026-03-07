@@ -4,4 +4,5 @@ mod common;
 
 mod password;
 mod webauthn;
+mod redirect;
 pub mod browser;
