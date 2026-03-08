@@ -173,72 +173,92 @@ use playwright_rs::Playwright;
 use playwright_rs::{Browser, Page};
 
 // Singletons for Playwright driver and Browser instances
-static GLOBAL_PLAYWRIGHT: tokio::sync::OnceCell<Playwright> = tokio::sync::OnceCell::const_new();
-static GLOBAL_CHROMIUM: tokio::sync::OnceCell<Option<Browser>> = tokio::sync::OnceCell::const_new();
-static GLOBAL_WEBKIT: tokio::sync::OnceCell<Option<Browser>> = tokio::sync::OnceCell::const_new();
-static GLOBAL_CHROMIUM_PORT: tokio::sync::OnceCell<u16> = tokio::sync::OnceCell::const_new();
+static GLOBAL_PLAYWRIGHT: tokio::sync::OnceCell<Result<Playwright, String>> = tokio::sync::OnceCell::const_new();
+static GLOBAL_CHROMIUM: tokio::sync::OnceCell<Result<(Browser, u16), String>> = tokio::sync::OnceCell::const_new();
+static GLOBAL_WEBKIT: tokio::sync::OnceCell<Result<Browser, String>> = tokio::sync::OnceCell::const_new();
 
-async fn get_playwright() -> &'static Playwright {
+async fn get_playwright() -> Result<&'static Playwright, &'static str> {
     GLOBAL_PLAYWRIGHT.get_or_init(|| async {
-        Playwright::launch().await.expect("Failed to init playwright")
+        Playwright::launch()
+            .await
+            .map_err(|e| format!("Failed to init playwright: {e:?}"))
     }).await
+    .as_ref()
+    .map_err(|e| e.as_str())
 }
 
-pub async fn get_chromium_page() -> Option<(Page, u16)> {
-    let port = *GLOBAL_CHROMIUM_PORT.get_or_init(|| async {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("Failed to bind for dynamic CDP port");
-        listener.local_addr().unwrap().port()
-    }).await;
+fn allocate_local_port() -> Result<u16, String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("Failed to bind dynamic local port: {e}"))?;
+    listener
+        .local_addr()
+        .map(|addr| addr.port())
+        .map_err(|e| format!("Failed to read dynamic local port: {e}"))
+}
 
-    let browser_opt = GLOBAL_CHROMIUM.get_or_init(|| async {
-        let p = get_playwright().await;
+pub async fn get_chromium_page() -> Result<(Page, u16), String> {
+    let browser_entry = GLOBAL_CHROMIUM.get_or_init(|| async {
+        let p = get_playwright()
+            .await
+            .map_err(|e| format!("Playwright unavailable: {e}"))?;
         let headless = std::env::var("HEADLESS").map(|v| v != "0").unwrap_or(true);
         let slow_mo = std::env::var("SLOW_MO").ok().and_then(|v| v.parse().ok());
+        let mut last_err = String::from("unknown launch failure");
 
-        let mut options = playwright_rs::api::LaunchOptions::default()
-            .headless(headless)
-            .args(vec![
-                format!("--remote-debugging-port={}", port)
-            ]);
+        for attempt in 1..=5 {
+            let port = allocate_local_port()?;
+            let mut options = playwright_rs::api::LaunchOptions::default()
+                .headless(headless)
+                .args(vec![
+                    format!("--remote-debugging-port={port}")
+                ]);
 
-        if let Some(ms) = slow_mo {
-            options = options.slow_mo(ms);
-        }
+            if let Some(ms) = slow_mo {
+                options = options.slow_mo(ms);
+            }
 
-        match p.chromium().launch_with_options(options).await {
-            Ok(b) => Some(b),
-            Err(e) => {
-                log::info!("Skipping chromium tests: Failed to launch browser: {:?}", e);
-                None
+            match p.chromium().launch_with_options(options).await {
+                Ok(b) => return Ok((b, port)),
+                Err(e) => {
+                    last_err = format!("{e:?}");
+                    log::warn!(
+                        "Chromium launch attempt {attempt}/5 failed on CDP port {port}: {last_err}"
+                    );
+                }
             }
         }
+
+        Err(format!("Failed to launch chromium after 5 attempts: {last_err}"))
     }).await;
 
-    if let Some(browser) = browser_opt {
-        let page = browser.new_page().await.expect("Failed to create chromium page");
-        Some((page, port))
-    } else {
-        None
-    }
+    let (browser, port) = browser_entry
+        .as_ref()
+        .map_err(|e| e.clone())?;
+
+    let page = browser
+        .new_page()
+        .await
+        .map_err(|e| format!("Failed to create chromium page: {e:?}"))?;
+
+    Ok((page, *port))
 }
 
-pub async fn get_webkit_page() -> Option<Page> {
-    let browser_opt = GLOBAL_WEBKIT.get_or_init(|| async {
-        let p = get_playwright().await;
+pub async fn get_webkit_page() -> Result<Page, String> {
+    let browser_entry = GLOBAL_WEBKIT.get_or_init(|| async {
+        let p = get_playwright()
+            .await
+            .map_err(|e| format!("Playwright unavailable: {e}"))?;
         match p.webkit().launch().await {
-            Ok(b) => Some(b),
-            Err(e) => {
-                log::info!("Skipping webkit tests: Failed to launch browser: {:?}", e);
-                None
-            }
+            Ok(b) => Ok(b),
+            Err(e) => Err(format!("Failed to launch webkit browser: {e:?}")),
         }
     }).await;
 
-    if let Some(browser) = browser_opt {
-        Some(browser.new_page().await.expect("Failed to create webkit page"))
-    } else {
-        None
-    }
+    let browser = browser_entry.as_ref().map_err(|e| e.clone())?;
+    browser
+        .new_page()
+        .await
+        .map_err(|e| format!("Failed to create webkit page: {e:?}"))
 }
 
 pub async fn start_server<F>(filter: F) -> u16
@@ -247,11 +267,9 @@ where
     F::Extract: warp::Reply,
 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let port = addr.port();
-    drop(listener);
+    let port = listener.local_addr().unwrap().port();
     let server = warp::serve(filter)
-        .bind(([127, 0, 0, 1], port)).await
+        .incoming(listener)
         .graceful(async {
             std::future::pending::<()>().await;
         }).run();

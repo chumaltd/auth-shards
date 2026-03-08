@@ -14,10 +14,9 @@ async fn check_redirect(page: Page, port: u16) {
 
 crate::test! {
     async fn it_redirects_external_chromium() {
-        let (page, _cdp_port) = match get_chromium_page().await {
-            Some(p) => p,
-            None => return, // Skip test
-        };
+        let (page, _cdp_port) = get_chromium_page()
+            .await
+            .expect("Chromium browser is required for this test");
 
         let route = warp::path("redirect")
             .map(|| auth_shards::warp::redirect_external("https://example.com/target").unwrap());
@@ -28,10 +27,9 @@ crate::test! {
     }
 
     async fn it_redirects_external_webkit() {
-        let page = match get_webkit_page().await {
-            Some(p) => p,
-            None => return,
-        };
+        let page = get_webkit_page()
+            .await
+            .expect("WebKit browser is required for this test");
 
         let route = warp::path("redirect")
             .map(|| auth_shards::warp::redirect_external("https://example.com/target").unwrap());

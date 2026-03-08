@@ -58,10 +58,9 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     }));
 
     let (port, _wa) = start_webauthn_server(state.clone()).await;
-    let (page, cdp_port) = match get_chromium_page().await {
-        Some(p) => p,
-        None => return,
-    };
+    let (page, cdp_port) = get_chromium_page()
+        .await
+        .expect("Chromium browser is required for passkey browser tests");
 
     // --- REGISTRATION ---
     let reg_url = format!("http://localhost:{port}/register.html?{fallback_param}");
