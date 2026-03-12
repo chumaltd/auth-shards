@@ -133,11 +133,18 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     crate::assert_no_console_errors!(&page);
 }
 
-pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16, webauthn_rs::Webauthn) {
-    let html_reg = r#"<html><body>
+fn escape_html_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('\'', "&#39;")
+        .replace('<', "&lt;")
+}
+
+fn render_register_html(challenge_json: &str) -> String {
+    const TEMPLATE: &str = r#"<html><body>
         <input id="agent" value="test-device">
         <span id="err"></span>
-        <button id="btn-register">Register</button>
+        <button id="btn-register" data-options='__CHALLENGE__'>Register</button>
         <script>
             const params = new URLSearchParams(globalThis.location.search);
             const forceFallback = params.has('force_fallback');
@@ -192,20 +199,25 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
         <script type="module">
           import { load_challenge, register_passkey } from "/passkey-client-register.js";
 
-          const t = await load_challenge('/auth/webauthn/register/challenge');
+          const t = await load_challenge(document.querySelector('#btn-register'));
           document.querySelector('#btn-register').addEventListener('click', function() {
             register_passkey('/auth/webauthn/register/apply')
             .then(function(res) {
               location = '/auth/account?passkey_registered';
             }).catch(function(e) {
               console.error(e);
-            });
+            })
           })
         </script>
     </body></html>"#;
-    let html_login = r#"<html><body>
+
+    TEMPLATE.replace("__CHALLENGE__", challenge_json)
+}
+
+fn render_login_html(challenge_json: &str) -> String {
+    const TEMPLATE: &str = r#"<html><body>
         <span id="err"></span>
-        <button id="btn-auth" disabled>Authenticate</button>
+        <button id="btn-auth" disabled data-options='__CHALLENGE__'>Authenticate</button>
         <script type="module">
           import { load_challenge, setup_conditional, passkey_btn_handler } from "/passkey-client-authn.js";
 
@@ -216,7 +228,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
           if (forceFallback) {
             globalThis.PublicKeyCredential.parseRequestOptionsFromJSON = undefined;
           }
-          await load_challenge('/auth/webauthn/login/challenge');
+          await load_challenge(document.querySelector('#btn-auth'));
           if (!disableConditional) {
              setup_conditional('/auth/webauthn/login/apply').then(async function(res) {
                  if (res && res.ok) { location = '/auth/account?authenticated'; }
@@ -238,8 +250,56 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
         </script>
     </body></html>"#;
 
-    let route_html_reg = warp::path("register.html").map(move || warp::reply::html(html_reg));
-    let route_html_login = warp::path("login.html").map(move || warp::reply::html(html_login));
+    TEMPLATE.replace("__CHALLENGE__", challenge_json)
+}
+
+pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16, webauthn_rs::Webauthn) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let origin = reqwest::Url::parse(&format!("http://localhost:{port}")).unwrap();
+    let builder = webauthn_rs::WebauthnBuilder::new("localhost", &origin).unwrap();
+    let wa = builder.build().unwrap();
+
+    let state_html_reg = state.clone();
+    let wa_html_reg = wa.clone();
+    let route_html_reg = warp::path("register.html")
+        .and_then(move || {
+            let state = state_html_reg.clone();
+            let wa = wa_html_reg.clone();
+            async move {
+                let uid = state.lock().unwrap().user_id.unwrap();
+                let (challenge, reg_state) = generate_challenge_register(&wa, uid, 1)
+                    .await
+                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+                let mut lock = state.lock().unwrap();
+                lock.challenge = Some(challenge.clone());
+                lock.reg_state = Some(reg_state);
+                let challenge_json = escape_html_attr(&serde_json::to_string(&challenge).unwrap());
+                let html_reg = render_register_html(&challenge_json);
+                Ok::<_, warp::Rejection>(warp::reply::html(html_reg))
+            }
+        });
+
+    let state_html_login = state.clone();
+    let wa_html_login = wa.clone();
+    let route_html_login = warp::path("login.html")
+        .and_then(move || {
+            let state = state_html_login.clone();
+            let wa = wa_html_login.clone();
+            async move {
+                let email = state.lock().unwrap().username.clone();
+                let (challenge, auth_state) = generate_challenge_authentication(&wa, email.as_deref())
+                    .await
+                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+                let mut lock = state.lock().unwrap();
+                lock.reg_state = Some(auth_state);
+                let challenge_json = escape_html_attr(&serde_json::to_string(&challenge).unwrap());
+                let html_login = render_login_html(&challenge_json);
+                Ok::<_, warp::Rejection>(warp::reply::html(html_login))
+            }
+        });
 
     let js_reg = std::fs::read_to_string("javascript/passkey-client-register.js").expect("Failed to read JS");
     let route_js_reg = warp::path("passkey-client-register.js")
@@ -248,14 +308,6 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
     let js_auth = std::fs::read_to_string("javascript/passkey-client-authn.js").expect("Failed to read JS");
     let route_js_auth = warp::path("passkey-client-authn.js")
         .map(move || warp::reply::with_header(js_auth.clone(), "Content-Type", "application/javascript"));
-
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-
-    let origin = reqwest::Url::parse(&format!("http://localhost:{port}")).unwrap();
-    let builder = webauthn_rs::WebauthnBuilder::new("localhost", &origin).unwrap();
-    let wa = builder.build().unwrap();
 
     let state_clone = state.clone();
     let wa_reg = wa.clone();

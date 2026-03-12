@@ -7,10 +7,23 @@ export async function load_challenge(url_challenge) {
         return false;
     }
 
-    const res_challenge = await fetch(url_challenge, { method: 'POST' });
-    const response = await res_challenge.json();
-    authnOptions = parse_request(response);
+    authnOptions = parse_request(await load_request_options(url_challenge));
     return authnOptions;
+}
+
+async function load_request_options(endpoint) {
+    if (endpoint instanceof HTMLElement) {
+        const options = endpoint.getAttribute('data-options');
+        if (!options) {
+            throw new Error('DOM endpoint should have data-options attribute.');
+        }
+        return JSON.parse(options);
+    }
+    if (typeof endpoint === 'string') {
+        const res_challenge = await fetch(endpoint, { method: 'POST' });
+        return await res_challenge.json();
+    }
+    throw new Error('endpoint should be URL string or DOM with data-options.');
 }
 
 export async function setup_conditional(endpoint, input_key = "credential") {
