@@ -88,18 +88,20 @@ impl SessionManager {
         client: &ClientContext,
     ) -> Result<(), SessionError> {
         let integrity = client.compute_hash();
-
         let via_pre = session.get_raw(self.keys.via);
 
         store.destroy_session(session.clone()).await?;
-        session.regenerate();
+        let mut new_session = Session::new();
+        if let Some(ref via_pre) = via_pre {
+            new_session.insert_raw(self.keys.via, via_pre.clone());
+        }
 
-        session.insert_raw(self.keys.id, account.id.to_string());
+        new_session.insert_raw(self.keys.id, account.id.to_string());
+        new_session.insert_raw(self.keys.integrity, integrity);
 
-        session.insert_raw(self.keys.integrity, integrity);
-
-        self.setup_group(session, account)?;
-        self.setup_via(session, account, via_pre, auth_type)?;
+        self.setup_group(&mut new_session, account)?;
+        self.setup_via(&mut new_session, account, via_pre, auth_type)?;
+        *session = new_session;
         Ok(())
     }
 
@@ -209,6 +211,7 @@ pub fn validate(session: &Session, client: &ClientContext) -> Result<(), Session
 mod tests {
     use super::*;
     use async_session::MemoryStore;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn test_session_login_basic() {
@@ -329,6 +332,35 @@ mod tests {
 
         // via should NOT be updated because via_pre existed
         assert_eq!(session.get_raw("vi").unwrap(), "99");
+    }
+
+    #[tokio::test]
+    async fn test_session_login_rebuilds_session() {
+        let store = MemoryStore::new();
+        let mut session = Session::new();
+        let old_session_id = session.id().to_string();
+        session.expire_in(Duration::from_secs(3600));
+        session.insert_raw("stale", "value".to_string());
+
+        let account = SessionAccount {
+            id: Uuid::now_v7(),
+            group: None,
+            superuser: false,
+            hard_pass: false,
+        };
+
+        let ctx = ClientContext {
+            brands: None,
+            platform: None,
+            model: None,
+            ua: Some("ua".to_string()),
+        };
+        session_login((&store, &mut session), &account, AuthType::PasswordStrong, &ctx).await.unwrap();
+
+        assert_ne!(session.id(), old_session_id);
+        assert!(session.expiry().is_none());
+        assert!(session.get_raw("stale").is_none());
+        assert_eq!(session.get_raw("id").unwrap(), account.id.to_string());
     }
 
     #[tokio::test]

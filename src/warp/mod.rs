@@ -1,6 +1,5 @@
 use log::error;
 use url::{Url, Position};
-use regex::Regex;
 use warp::{
     reject,
     reply::{self, Reply},
