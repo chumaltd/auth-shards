@@ -1,5 +1,7 @@
 use server_conf::abs_path_with_default;
 use sha2::{Digest, Sha256};
+use thiserror::Error;
+use url::{Url, Position};
 use uuid::Uuid;
 use webauthn_rs_device_catalog::Data;
 
@@ -191,6 +193,66 @@ pub fn abs_path(path: &str) -> String {
     abs_path_with_default(path, "/auth")
 }
 
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RedirectPathError {
+    #[error("invalid redirect path")]
+    InvalidUrl(#[from] url::ParseError),
+    #[error("redirect path must be relative or an absolute http(s) URL")]
+    UnsupportedScheme,
+}
+
+fn normalize_relative_redirect_target(path: &str) -> Result<Url, RedirectPathError> {
+    let disposal_base = Url::parse("https://example.com").unwrap();
+    let url = disposal_base.join(path)?;
+
+    if url.cannot_be_a_base() {
+        Err(RedirectPathError::UnsupportedScheme)
+    } else {
+        Ok(url)
+    }
+}
+
+fn normalize_absolute_redirect_target(url: Url) -> Result<Url, RedirectPathError> {
+    if url.cannot_be_a_base() || url.host_str().is_none() {
+        Err(RedirectPathError::UnsupportedScheme)
+    } else {
+        Ok(url)
+    }
+}
+
+pub fn normalize_return_path(path: &str, domain: Option<&str>) -> Option<String> {
+    let Ok(absolute_url) = Url::parse(path) else {
+        let relative_url = normalize_relative_redirect_target(path).ok()?;
+        return Some(relative_url[Position::BeforePath..].to_string());
+    };
+
+    let absolute_url = normalize_absolute_redirect_target(absolute_url).ok()?;
+    if let Some(domain) = domain {
+        if absolute_url.host_str()? != domain {
+            return None;
+        }
+    }
+
+    Some(absolute_url[Position::BeforePath..].to_string())
+}
+
+pub fn normalize_return_url(url: &str, domain: &str) -> Option<String> {
+    let absolute_url = Url::parse(url).ok()?;
+    let absolute_url = normalize_absolute_redirect_target(absolute_url).ok()?;
+    let host = absolute_url.host_str()?;
+
+    if host != domain && !host.ends_with(&format!(".{domain}")) {
+        return None;
+    }
+
+    Some(absolute_url.into())
+}
+
+pub(crate) fn normalize_redirect_url(url: &str) -> Result<String, RedirectPathError> {
+    let absolute_url = Url::parse(url)?;
+    Ok(normalize_absolute_redirect_target(absolute_url)?.into())
+}
+
 pub fn resolve_aaguid_name(uuid: &Uuid) -> Option<String> {
     // 1. Try to find the device in the catalog
     let catalog = Data::all_known_devices();
@@ -223,6 +285,78 @@ mod tests {
         assert_eq!(abs_path("/dir"), "/auth/dir");
         assert_eq!(abs_path("/"), "/auth/");
         assert_eq!(abs_path(""), "/auth/");
+    }
+
+    #[test]
+    fn normalize_return_path_accepts_relative_path() {
+        assert_eq!(
+            normalize_return_path("/account?authenticated=1#ok", None),
+            Some("/account?authenticated=1#ok".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_return_path_accepts_same_domain_absolute_url() {
+        assert_eq!(
+            normalize_return_path("https://dev.example.com/test?query#frag", Some("dev.example.com")),
+            Some("/test?query#frag".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_return_path_rejects_foreign_domain() {
+        assert_eq!(
+            normalize_return_path("https://example.com/test", Some("dev.example.com")),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_return_path_rejects_unsupported_scheme() {
+        assert_eq!(
+            normalize_return_path("javascript:alert(1)", None),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_return_url_accepts_same_domain_absolute_url() {
+        assert_eq!(
+            normalize_return_url("https://dev.example.com/test?query#frag", "dev.example.com"),
+            Some("https://dev.example.com/test?query#frag".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_return_url_accepts_subdomain_absolute_url() {
+        assert_eq!(
+            normalize_return_url("https://tenant.dev.example.com/test?query#frag", "dev.example.com"),
+            Some("https://tenant.dev.example.com/test?query#frag".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_return_url_rejects_foreign_domain() {
+        assert_eq!(
+            normalize_return_url("https://example.com/test", "dev.example.com"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_return_url_rejects_unsupported_scheme() {
+        assert_eq!(
+            normalize_return_url("mailto:test@example.com", "example.com"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_redirect_url_rejects_unsupported_scheme() {
+        assert_eq!(
+            normalize_redirect_url("mailto:test@example.com"),
+            Err(RedirectPathError::UnsupportedScheme)
+        );
     }
 
     #[test]

@@ -1,5 +1,4 @@
 use log::error;
-use url::{Url, Position};
 use warp::{
     reject,
     reply::{self, Reply},
@@ -9,7 +8,10 @@ use warp::{
 pub mod rejection;
 
 use crate::util::ClientContext;
+use crate::util::normalize_redirect_url;
 use crate::session::{SessionManager, SessionError};
+use crate::normalize_return_path;
+use crate::normalize_return_url;
 use self::rejection::{NoLogin, NoLoginA};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use async_session::Session;
@@ -68,14 +70,10 @@ pub fn validate_api(
 }
 
 pub fn redirect_internal(path: impl Into<String>) -> Result<reply::Response, Rejection> {
-    let disposal_base = Url::parse("https://example.com").unwrap();
-    let url: Url = disposal_base.join(&path.into())
-        .map_err(|e| {
-            error!("{e}");
-            reject::reject()
-        })?;
-
-    let redirect_path = url[Position::BeforePath..].to_string();
+    let redirect_path = normalize_return_path(&path.into(), None).ok_or_else(|| {
+        error!("invalid redirect path");
+        reject::reject()
+    })?;
 
     let reply = reply::with_header(
         StatusCode::SEE_OTHER,
@@ -86,7 +84,7 @@ pub fn redirect_internal(path: impl Into<String>) -> Result<reply::Response, Rej
 }
 
 pub fn redirect_external(url: impl Into<String>) -> Result<reply::Response, Rejection> {
-    let redirect_url: Url = Url::parse(&url.into()).map_err(|e| {
+    let redirect_url = normalize_redirect_url(&url.into()).map_err(|e| {
         error!("{e}");
         reject::reject()
     })?;
@@ -95,6 +93,23 @@ pub fn redirect_external(url: impl Into<String>) -> Result<reply::Response, Reje
         StatusCode::SEE_OTHER,
         header::LOCATION,
         String::from(redirect_url)
+    );
+    Ok(append_no_cache_headers(reply).into_response())
+}
+
+pub fn redirect_subdomain(
+    url: impl Into<String>,
+    domain: impl AsRef<str>,
+) -> Result<reply::Response, Rejection> {
+    let redirect_url = normalize_return_url(&url.into(), domain.as_ref()).ok_or_else(|| {
+        error!("invalid subdomain redirect url");
+        reject::reject()
+    })?;
+
+    let reply = reply::with_header(
+        StatusCode::SEE_OTHER,
+        header::LOCATION,
+        redirect_url
     );
     Ok(append_no_cache_headers(reply).into_response())
 }
@@ -113,6 +128,7 @@ pub fn append_no_cache_headers(reply: impl Reply) -> impl Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use warp::http::StatusCode as HttpStatusCode;
     use warp::test::request;
 
     #[tokio::test]
@@ -167,5 +183,30 @@ mod tests {
             .await;
 
         assert!(res.is_ok(), "Should NOT reject even if both brands and ua are missing");
+    }
+
+    #[tokio::test]
+    async fn test_redirect_subdomain_accepts_allowed_subdomain() {
+        let response = redirect_subdomain(
+            "https://tenant.dev.example.com/path?q=1#frag",
+            "dev.example.com",
+        )
+        .unwrap();
+
+        assert_eq!(response.status(), HttpStatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "https://tenant.dev.example.com/path?q=1#frag"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_redirect_subdomain_rejects_foreign_domain() {
+        let response = redirect_subdomain(
+            "https://example.com/path?q=1#frag",
+            "dev.example.com",
+        );
+
+        assert!(response.is_err());
     }
 }

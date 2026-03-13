@@ -6,6 +6,8 @@ mod util;
 
 pub use util::abs_path;
 pub use util::ClientContext;
+pub use util::normalize_return_path;
+pub use util::normalize_return_url;
 pub use util::resolve_aaguid_name;
 
 #[cfg(feature = "google-openid")]

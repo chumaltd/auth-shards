@@ -66,4 +66,21 @@ crate::test! {
         assert_eq!(res.status(), reqwest::StatusCode::SEE_OTHER);
         assert_common_redirect_headers(res.headers(), "https://example.com/path/to?p=1#ok");
     }
+
+    async fn redirect_subdomain_returns_expected_headers() {
+        let route = warp::path("redirect").map(|| {
+            auth_shards::warp::redirect_subdomain(
+                "https://tenant.dev.example.com/path/to?p=1#ok",
+                "dev.example.com",
+            )
+            .unwrap()
+        });
+        let res = get_redirect_response(route).await;
+
+        assert_eq!(res.status(), reqwest::StatusCode::SEE_OTHER);
+        assert_common_redirect_headers(
+            res.headers(),
+            "https://tenant.dev.example.com/path/to?p=1#ok"
+        );
+    }
 }
