@@ -124,6 +124,8 @@ impl ClientContext {
         hex::encode(hasher.finalize())
     }
 
+    /// Helper for callers that want a human-readable passkey/device label.
+    /// Lower layers may accept arbitrary caller-provided `device_note` values.
     pub fn device_name(&self, aaguid: Option<&Uuid>) -> String {
         let aaguid_name = aaguid.and_then(|uuid| resolve_aaguid_name(uuid));
         let device_info = self.get_device_info();

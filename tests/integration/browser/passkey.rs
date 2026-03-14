@@ -270,7 +270,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
             let wa = wa_html_reg.clone();
             async move {
                 let uid = state.lock().unwrap().user_id.unwrap();
-                let (challenge, reg_state) = generate_challenge_register(&wa, uid, 1)
+                let (challenge, reg_state) = generate_challenge_register(&wa, true, uid, 1)
                     .await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
                 let mut lock = state.lock().unwrap();
@@ -318,7 +318,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
             let wa = wa_reg.clone();
             async move {
                 let uid = state.lock().unwrap().user_id.unwrap();
-                let (challenge, reg_state) = generate_challenge_register(&wa, uid, 1)
+                let (challenge, reg_state) = generate_challenge_register(&wa, true, uid, 1)
                     .await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
                 let mut lock = state.lock().unwrap();

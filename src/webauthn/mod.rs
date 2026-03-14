@@ -1,4 +1,5 @@
 use base64::prelude::*;
+use chrono::NaiveDateTime;
 use log::{debug, error};
 use pg_pool::{pg, pgr};
 use thiserror::Error;
@@ -34,26 +35,41 @@ pub enum WebAuthnError {
     NoIdRegistered,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct PasskeyRecord {
+    pub id: String,
+    pub description: String,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+// Generate a registration challenge for either ordinary registration (`check_duplicate = true`)
+// or replace flows (`check_duplicate = false`).
 pub async fn generate_challenge_register(
     wa: &Webauthn,
+    check_duplicate: bool,
     uid: Uuid,
     max_count: u8,
 ) -> Result<(CreationChallengeResponse, String), WebAuthnError> {
-    let row = pgr::query_one(r#"SELECT u.name, u.email, count(w.id)::smallint AS keys
+    let rows = pgr::query(r#"SELECT u.name, u.email, count(w.id)::smallint AS keys
          FROM users u LEFT JOIN webauthns w on u.id = w.user_id
          where u.id = $1 group by u.id"#, &[&uid]).await
         .map_err(|e| {
             debug!("{:?}", e);
-            WebAuthnError::NoIdRegistered
+            WebAuthnError::Db
         })?;
-    if row.get::<_, i16>("keys") >= max_count as i16 {
+    let row = rows.first().ok_or(WebAuthnError::NoIdRegistered)?;
+    if check_duplicate && row.get::<_, i16>("keys") >= max_count as i16 {
         return Err(WebAuthnError::Exceeded);
     }
 
     let uname = row.get::<_, String>("email");
     let _webauthn_id = uname.as_bytes().to_vec();
     let udisp = row.get::<_, String>("name");
-    let credentials = list_cred_ids(&uid).await;
+    let credentials = match check_duplicate {
+        true => list_cred_ids(&uid).await,
+        false => None,
+    };
 
     let (challenge_res, reg_state) = wa.start_passkey_registration(uid, &uname, &udisp, credentials)
         .map_err(|e| {
@@ -82,10 +98,10 @@ pub async fn try_generate_passkey(
         })
 }
 
+// Passkey { cred: Credential { attestation: ParsedAttestation { metadata: AttestationMetadata { ... } } } }
+// Enums are externally tagged by default: {"Packed": {"aaguid": "..."}}
 pub fn get_aaguid(passkey: &Passkey) -> Option<Uuid> {
     let val = serde_json::to_value(passkey).ok()?;
-    // Passkey { cred: Credential { attestation: ParsedAttestation { metadata: AttestationMetadata { ... } } } }
-    // Enums are externally tagged by default: {"Packed": {"aaguid": "..."}}
     let metadata = val.get("cred")?.get("attestation")?.get("metadata")?;
 
     if let Some(packed) = metadata.get("Packed") {
@@ -98,19 +114,14 @@ pub fn get_aaguid(passkey: &Passkey) -> Option<Uuid> {
     None
 }
 
+// Callers may use helpers such as `ClientContext::device_name` to build `device_note`,
+// This layer stores the provided value as-is.
 pub async fn register_passkey(
     uid: &Uuid,
     pass_key: &Passkey,
     device_note: &str,
     max_count: u8
 ) -> Result<(), WebAuthnError> {
-    let mut device_name = device_note.to_string();
-    if let Some(aaguid) = get_aaguid(pass_key) {
-        if let Some(auth_name) = crate::resolve_aaguid_name(&aaguid) {
-            device_name = format!("{} {}", auth_name, device_note).trim().to_string();
-        }
-    }
-
     let passkey_json = serde_json::to_value(&pass_key)
         .map_err(|e| {
             error!("{:?}", e);
@@ -120,7 +131,7 @@ pub async fn register_passkey(
         &pass_key.cred_id().as_slice(),
         &uid,
         &passkey_json,
-        &device_name,
+        device_note,
         max_count as i8
     ).await
 }
@@ -132,21 +143,127 @@ pub async fn insert_passkey(
     device_name: &str,
     max_count: i8
 ) -> Result<(), WebAuthnError> {
-    let rows = pg::query(r#"insert into webauthns
-        (user_id, id, credential, description)
-        select u.id, $2, $3, $4 from users u
-        left join webauthns w on u.id = w.user_id
-        where u.id = $1
-        group by u.id having count(w.id) < $5
-        returning id"#,
+    let row = pg::query_one(r#"WITH existing AS (
+            SELECT count(w.id) AS key_count
+              FROM users u
+              LEFT JOIN webauthns w ON u.id = w.user_id
+             WHERE u.id = $1
+             GROUP BY u.id
+        ),
+        inserted AS (
+            INSERT INTO webauthns (user_id, id, credential, description)
+            SELECT $1, $2, $3, $4
+             WHERE EXISTS (SELECT 1 FROM existing WHERE key_count < $5)
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+        )
+        SELECT
+            COALESCE((SELECT key_count FROM existing), 0) AS key_count,
+            (SELECT count(*) FROM inserted) AS inserted_count"#,
         &[&uid, &id, &passkey_json, &device_name, &(max_count as i64)])
         .await
         .map_err(|e| {
             error!("insert_passkey: {e}");
             WebAuthnError::Db
         })?;
-    if rows.is_empty() {
+    let key_count = row.get::<_, i64>("key_count");
+    let inserted_count = row.get::<_, i64>("inserted_count");
+    if inserted_count == 0 && key_count >= max_count as i64 {
         return Err(WebAuthnError::Exceeded);
+    }
+    if inserted_count == 0 {
+        return Err(WebAuthnError::Rejected);
+    }
+
+    Ok(())
+}
+
+// Replace an existing passkey with `new_key`.
+// `new_key` is expected to come from a valid WebAuthn registration ceremony;
+// session/challenge binding is guarded by the upper layer and `webauthn_rs`.
+pub async fn replace_passkey(
+    delete_id: &str,
+    uid: &Uuid,
+    new_key: &Passkey,
+    device_note: &str
+) -> Result<(), WebAuthnError> {
+    let delete_id_bytes: Vec<u8> = BASE64_URL_SAFE_NO_PAD.decode(delete_id)
+        .map_err(|_e| WebAuthnError::Serde)?;
+
+    let passkey_json = serde_json::to_value(&new_key)
+        .map_err(|e| {
+            error!("{:?}", e);
+            WebAuthnError::Serde
+        })?;
+
+    let row = pg::query_one(
+        r#"WITH deleted AS (
+               DELETE FROM webauthns
+               WHERE user_id = $1 AND id = $2
+               RETURNING user_id
+           ),
+           inserted AS (
+               INSERT INTO webauthns (user_id, id, credential, description)
+               SELECT u.id, $3, $4, $5
+                 FROM users u
+                WHERE u.id = $1
+                  AND EXISTS (SELECT 1 FROM deleted)
+               ON CONFLICT (id) DO NOTHING
+               RETURNING id
+           )
+           SELECT
+               (SELECT count(*) FROM deleted) AS deleted_count,
+               (SELECT count(*) FROM inserted) AS inserted_count"#,
+        &[
+            &uid,
+            &delete_id_bytes,
+            &new_key.cred_id().as_slice(),
+            &passkey_json,
+            &device_note
+        ]
+    ).await
+        .map_err(|e| {
+            error!("replace_passkey: {e}");
+            WebAuthnError::Db
+        })?;
+    let deleted_count = row.get::<_, i64>("deleted_count");
+    let inserted_count = row.get::<_, i64>("inserted_count");
+    if deleted_count == 0 {
+        return Err(WebAuthnError::NoIdRegistered);
+    }
+    if inserted_count == 0 {
+        return Err(WebAuthnError::Rejected);
+    }
+
+    Ok(())
+}
+
+pub async fn rename_passkey(
+    id: &str,
+    uid: &Uuid,
+    device_note: &str,
+) -> Result<(), WebAuthnError> {
+    let trimmed = device_note.trim();
+    if trimmed.is_empty() {
+        return Err(WebAuthnError::Rejected);
+    }
+
+    let id_bytes: Vec<u8> = BASE64_URL_SAFE_NO_PAD.decode(id)
+        .map_err(|_e| WebAuthnError::Serde)?;
+
+    let rows = pg::query(
+        r#"UPDATE webauthns
+           SET description = $3, updated_at = now()
+           WHERE id = $1 AND user_id = $2
+           RETURNING id"#,
+        &[&id_bytes, &uid, &trimmed]
+    ).await
+        .map_err(|e| {
+            error!("rename_passkey: {e}");
+            WebAuthnError::Db
+        })?;
+    if rows.is_empty() {
+        return Err(WebAuthnError::NoIdRegistered);
     }
 
     Ok(())
@@ -188,6 +305,31 @@ pub async fn delete_passkey(
     }
 
     Ok(())
+}
+
+pub async fn list_passkeys(
+    uid: &Uuid,
+) -> Result<Vec<PasskeyRecord>, WebAuthnError> {
+    let rows = pgr::query(
+        r#"SELECT id, description, created_at, updated_at
+           FROM webauthns
+           WHERE user_id = $1
+           ORDER BY created_at DESC"#,
+        &[&uid]
+    ).await
+        .map_err(|e| {
+            error!("list_passkeys: {e}");
+            WebAuthnError::Db
+        })?;
+
+    Ok(rows.iter().map(|row| {
+        PasskeyRecord {
+            id: BASE64_URL_SAFE_NO_PAD.encode(row.get::<_, Vec<u8>>("id")),
+            description: row.try_get("description").unwrap_or_default(),
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+        }
+    }).collect())
 }
 
 pub fn can_delete_passkey(passkey_count: usize, via: &AuthType) -> bool {

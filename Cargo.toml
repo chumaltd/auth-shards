@@ -1,6 +1,6 @@
 [package]
 name = "auth-shards"
-version = "0.4.3"
+version = "0.4.4"
 authors = ["Chuma Takahiro <co.chuma@gmail.com>"]
 edition = "2024"
 
@@ -16,6 +16,7 @@ async-session = "3"
 argon2 = "0.5"
 base64 = "0.22"
 bcrypt = { version = "0.17", optional = true }
+chrono = "0.4"
 log = "0.4"
 openidconnect = { version = "4.0", optional = true, features = ["reqwest"] }
 passwords = "3.1"
