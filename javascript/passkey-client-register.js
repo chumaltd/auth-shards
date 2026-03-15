@@ -7,12 +7,15 @@ export class PostError extends Error {
     }
 }
 
-export async function load_challenge(url_challenge) {
+export async function load_challenge(source, replace = false) {
     if (!(navigator.credentials.create && await PublicKeyCredential.isConditionalMediationAvailable)) {
         return false;
     }
 
-    registerOptions = parse_request((await load_request_options(url_challenge)).publicKey);
+    const response = await resolve_challenge_source(source, replace);
+    if (!response) return false;
+    registerOptions = await Promise.resolve(response)
+        .then(r => parse_request(r.publicKey));
 
     // Common configuration
     registerOptions.authenticatorSelection = registerOptions.authenticatorSelection || {};
@@ -24,21 +27,6 @@ export async function load_challenge(url_challenge) {
     }
 
     return registerOptions;
-}
-
-async function load_request_options(endpoint) {
-    if (endpoint instanceof HTMLElement) {
-        const options = endpoint.getAttribute('data-options');
-        if (!options) {
-            throw new Error('DOM endpoint should have data-options attribute.');
-        }
-        return JSON.parse(options);
-    }
-    if (typeof endpoint === 'string') {
-        const res = await fetch(endpoint, { method: 'POST' });
-        return await res.json();
-    }
-    throw new Error('endpoint should be URL string or DOM with data-options.');
 }
 
 export function redirect_on_error(error, redirect_path = "#") {
@@ -75,6 +63,38 @@ export async function register_passkey(endpoint, input_key = "credential") {
 
     const credential = await navigator.credentials.create({ publicKey: registerOptions });
     return await submit_credential(endpoint, credential, input_key);
+}
+
+async function resolve_challenge_source(source, replace = false) {
+    if (source instanceof HTMLElement) {
+        const raw = source.dataset.options;
+        if (!raw) return false;
+        return JSON.parse(raw);
+    }
+    if (typeof source === 'string') {
+        const trimmed = source.trim();
+        if (trimmed.startsWith('{')) {
+            return JSON.parse(trimmed);
+        }
+
+        const body = new URLSearchParams();
+        if (replace) {
+            body.set('replace', 'true');
+        }
+        const res = await fetch(source, {
+            method: 'POST',
+            body: body.toString(),
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+        });
+        return await res.json();
+    }
+    if (typeof source === 'object' && source?.publicKey) {
+        return source;
+    }
+
+    throw new Error('challenge source should be URL, DOM, or challenge object.');
 }
 
 function parse_request(publicKey) {
@@ -125,7 +145,6 @@ async function submit_credential(endpoint, credential, input_key = "credential")
         body: credential_json,
         headers: {
             'Content-Type': 'application/json',
-            'X-Register-Device': document.querySelector('input#agent')?.value
         }
     })
         .catch(e => { throw new PostError("Posting to server failed", { cause: e }); });

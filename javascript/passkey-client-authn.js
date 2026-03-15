@@ -1,29 +1,27 @@
 let authnOptions = null;
 let abortController = new AbortController();
 const is_l3_available = () => !!globalThis.PublicKeyCredential?.parseRequestOptionsFromJSON;
+let redirect_url;
 
-export async function load_challenge(url_challenge) {
+export async function load_challenge(source) {
     if (!(navigator.credentials.get && await PublicKeyCredential.isConditionalMediationAvailable)) {
         return false;
     }
 
-    authnOptions = parse_request(await load_request_options(url_challenge));
+    const response = await resolve_challenge_source(source);
+    if (!response) return false;
+    authnOptions = parse_request(response);
     return authnOptions;
 }
 
-async function load_request_options(endpoint) {
-    if (endpoint instanceof HTMLElement) {
-        const options = endpoint.getAttribute('data-options');
-        if (!options) {
-            throw new Error('DOM endpoint should have data-options attribute.');
+export function update_redirect(url) {
+    const target = new URL(url, location.origin);
+    try {
+        if (/^https?:/.test(target.protocol) && target.origin === location.origin) {
+            redirect_url ||= target.pathname + target.search + target.hash;
         }
-        return JSON.parse(options);
-    }
-    if (typeof endpoint === 'string') {
-        const res_challenge = await fetch(endpoint, { method: 'POST' });
-        return await res_challenge.json();
-    }
-    throw new Error('endpoint should be URL string or DOM with data-options.');
+    } catch(e) { console.error(`${e.name}: ${e.message}`); }
+    redirect_url ||= 1;
 }
 
 export async function setup_conditional(endpoint, input_key = "credential") {
@@ -65,6 +63,26 @@ export async function passkey_btn_handler(endpoint, input_key = "credential") {
     }
 }
 
+function resolve_challenge_source(source) {
+    if (source instanceof HTMLElement) {
+        const raw = source.dataset.options;
+        if (!raw) return false;
+        return JSON.parse(raw);
+    }
+    if (typeof source === 'string') {
+        const trimmed = source.trim();
+        if (trimmed.startsWith('{')) {
+            return JSON.parse(trimmed);
+        }
+        return fetch(source, { method: 'POST' }).then(res => res.json());
+    }
+    if (typeof source === 'object' && source?.publicKey) {
+        return source;
+    }
+
+    throw new Error('challenge source should be URL, DOM, or challenge object.');
+}
+
 function parse_request(response) {
     if (is_l3_available()) {
         return {
@@ -83,13 +101,19 @@ async function submit_credential(endpoint, credential, input_key = "credential")
     if (!credential) return;
 
     let dom_form = null;
-    let url = null;
+    let url_register = null;
     if (endpoint instanceof HTMLElement) {
         dom_form = endpoint;
     } else if (typeof endpoint === 'string') {
-        url = endpoint;
+        url_register = endpoint;
     } else {
         throw new Error('endpoint should be URL string or form DOM.');
+    }
+
+    if (typeof redirect_url == 'string') {
+        try {
+            history.replaceState(null, '', redirect_url);
+        } catch(e) { console.error(`history.replaceState() detected: ${e}`); }
     }
     let credential_json;
     if (is_l3_available()) {
@@ -107,7 +131,7 @@ async function submit_credential(endpoint, credential, input_key = "credential")
         return;
     }
 
-    return await fetch(url, {
+    return await fetch(url_register, {
         body: JSON.stringify(credential_json),
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

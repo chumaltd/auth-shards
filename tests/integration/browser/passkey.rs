@@ -24,6 +24,8 @@ pub(crate) struct MockState {
     pub reg_state: Option<String>, // RegState is String in generate_challenge_register
     pub user_id: Option<Uuid>,
     pub username: Option<String>,
+    pub register_challenge_requests: usize,
+    pub auth_challenge_requests: usize,
 }
 
 #[derive(Debug)]
@@ -33,17 +35,29 @@ impl warp::reject::Reject for WebAuthnTestError {}
 
 crate::test! {
     async fn it_registers_and_authenticates_passkey_l3() {
-        test_registers_and_authenticates_passkey(false).await;
+        test_registers_and_authenticates_passkey(false, false).await;
     }
 
     async fn it_registers_and_authenticates_passkey_fallback() {
-        test_registers_and_authenticates_passkey(true).await;
+        test_registers_and_authenticates_passkey(true, false).await;
+    }
+
+    async fn it_registers_and_authenticates_passkey_l3_via_challenge_url() {
+        test_registers_and_authenticates_passkey(false, true).await;
+    }
+
+    async fn it_registers_and_authenticates_passkey_fallback_via_challenge_url() {
+        test_registers_and_authenticates_passkey(true, true).await;
     }
 }
 
-async fn test_registers_and_authenticates_passkey(fallback: bool) {
+async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_url: bool) {
     let fallback_param = match fallback {
         true => "&force_fallback=1",
+        false => ""
+    };
+    let challenge_source_param = match challenge_via_url {
+        true => "&challenge_source=url",
         false => ""
     };
     let _pool = setup().await;
@@ -55,6 +69,8 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
         reg_state: None,
         user_id: Some(uid1),
         username: Some(email1.clone()),
+        register_challenge_requests: 0,
+        auth_challenge_requests: 0,
     }));
 
     let (port, _wa) = start_webauthn_server(state.clone()).await;
@@ -63,7 +79,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
         .expect("Chromium browser is required for passkey browser tests");
 
     // --- REGISTRATION ---
-    let reg_url = format!("http://localhost:{port}/register.html?{fallback_param}");
+    let reg_url = format!("http://localhost:{port}/register.html?{fallback_param}{challenge_source_param}");
 
     page.goto(&reg_url, None).await.unwrap();
     setup_console_tracker(&page).await;
@@ -80,13 +96,18 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
     expect(page.locator("body#account").await)
         .to_be_visible().await.unwrap();
     assert!(page.url().contains("passkey_registered"), "[L3] Redirect failed, stuck on {}", page.url());
+    {
+        let lock = state.lock().unwrap();
+        let expected = if challenge_via_url { 2 } else { 0 };
+        assert_eq!(lock.register_challenge_requests, expected, "unexpected register challenge source usage");
+    }
     let row1 = pg::query_one("select credential from webauthns where user_id = $1",
                              &[&uid1]).await.unwrap();
     let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
     assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
 
     // --- Authentication - EXPLICIT BUTTON CLICK ---
-    let auth_url = format!("http://localhost:{port}/login.html?disable_conditional=1{fallback_param}");
+    let auth_url = format!("http://localhost:{port}/login.html?disable_conditional=1{fallback_param}{challenge_source_param}");
     {
         let mut lock = state.lock().unwrap();
         lock.username = Some(email1.clone());
@@ -104,6 +125,11 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
         .to_be_visible().await.unwrap();
 
     assert!(page.url().contains("authenticated"), "Auth 1 redirect failed, stuck on {}", page.url());
+    {
+        let lock = state.lock().unwrap();
+        let expected = if challenge_via_url { 1 } else { 0 };
+        assert_eq!(lock.auth_challenge_requests, expected, "unexpected auth challenge source usage after button flow");
+    }
 
     // --- Guard from deletion ---
     let id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id().as_slice());
@@ -118,7 +144,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
         let mut lock = state.lock().unwrap();
         lock.username = Some(email1.clone());
     }
-    let auth_url2 = format!("http://localhost:{port}/login.html?{fallback_param}");
+    let auth_url2 = format!("http://localhost:{port}/login.html?{fallback_param}{challenge_source_param}");
     page.goto(&auth_url2, None).await.unwrap();
 
     // Wait for conditional UI to finish automatically due to CPD
@@ -129,6 +155,11 @@ async fn test_registers_and_authenticates_passkey(fallback: bool) {
         .to_be_visible().await.unwrap();
 
     assert!(page.url().contains("authenticated"), "Auth 2 redirect failed, stuck on {}", page.url());
+    {
+        let lock = state.lock().unwrap();
+        let expected = if challenge_via_url { 2 } else { 0 };
+        assert_eq!(lock.auth_challenge_requests, expected, "unexpected auth challenge source usage after conditional flow");
+    }
 
     crate::assert_no_console_errors!(&page);
 }
@@ -199,7 +230,10 @@ fn render_register_html(challenge_json: &str) -> String {
         <script type="module">
           import { load_challenge, register_passkey } from "/passkey-client-register.js";
 
-          const t = await load_challenge(document.querySelector('#btn-register'));
+          const challengeSource = new URLSearchParams(globalThis.location.search).get('challenge_source') === 'url'
+            ? '/auth/webauthn/register/challenge'
+            : document.querySelector('#btn-register');
+          const t = await load_challenge(challengeSource);
           document.querySelector('#btn-register').addEventListener('click', function() {
             register_passkey('/auth/webauthn/register/apply')
             .then(function(res) {
@@ -223,12 +257,15 @@ fn render_login_html(challenge_json: &str) -> String {
 
           const params = new URLSearchParams(globalThis.location.search);
           const disableConditional = params.has('disable_conditional');
+          const challengeSource = params.get('challenge_source') === 'url'
+            ? '/auth/webauthn/login/challenge'
+            : document.querySelector('#btn-auth');
 
           const forceFallback = params.has('force_fallback');
           if (forceFallback) {
             globalThis.PublicKeyCredential.parseRequestOptionsFromJSON = undefined;
           }
-          await load_challenge(document.querySelector('#btn-auth'));
+          await load_challenge(challengeSource);
           if (!disableConditional) {
              setup_conditional('/auth/webauthn/login/apply').then(async function(res) {
                  if (res && res.ok) { location = '/auth/account?authenticated'; }
@@ -322,6 +359,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     .await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
                 let mut lock = state.lock().unwrap();
+                lock.register_challenge_requests += 1;
                 lock.challenge = Some(challenge.clone());
                 lock.reg_state = Some(reg_state);
                 let json_val = serde_json::to_value(&challenge).unwrap();
@@ -334,8 +372,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
     let route_reg_apply = warp::path!("auth" / "webauthn" / "register" / "apply")
         .and(warp::post())
         .and(warp::body::json())
-        .and(warp::header::<String>("X-Register-Device"))
-        .and_then(move |body: serde_json::Value, device: String| {
+        .and_then(move |body: serde_json::Value| {
             let state = state_reg_apply.clone();
             let wa = wa_reg_apply.clone();
             async move {
@@ -357,7 +394,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                 let passkey = auth_shards::webauthn::try_generate_passkey(&wa, &reg, &reg_state).await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
 
-                auth_shards::webauthn::register_passkey(&uid, &passkey, &device, 10).await
+                auth_shards::webauthn::register_passkey(&uid, &passkey, "Unknown Device", 10).await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
 
                 Ok::<_, warp::Rejection>(warp::reply::json(&json!({ "status": "ok" })))
@@ -377,6 +414,7 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     .await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
                 let mut lock = state.lock().unwrap();
+                lock.auth_challenge_requests += 1;
                 lock.reg_state = Some(auth_state);
                 Ok::<_, warp::Rejection>(warp::reply::json(&challenge))
             }
