@@ -3,8 +3,15 @@ let abortController = new AbortController();
 const is_l3_available = () => !!globalThis.PublicKeyCredential?.parseRequestOptionsFromJSON;
 let redirect_url;
 
+async function is_passkey_operation_available() {
+    return !!(
+        navigator.credentials?.get
+        && globalThis.PublicKeyCredential?.isConditionalMediationAvailable
+    );
+}
+
 export async function load_challenge(source) {
-    if (!(navigator.credentials.get && await PublicKeyCredential.isConditionalMediationAvailable)) {
+    if (!(await is_passkey_operation_available())) {
         return false;
     }
 

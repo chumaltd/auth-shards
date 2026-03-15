@@ -1,6 +1,13 @@
 let registerOptions = null;
 const is_l3_available = () => !!globalThis.PublicKeyCredential?.parseCreationOptionsFromJSON;
 
+export async function is_passkey_operation_available() {
+    return !!(
+        navigator.credentials?.create
+        && globalThis.PublicKeyCredential?.isConditionalMediationAvailable
+    );
+}
+
 export class PostError extends Error {
     static {
         this.prototype.name = "PostError";
@@ -8,7 +15,7 @@ export class PostError extends Error {
 }
 
 export async function load_challenge(source, replace = false) {
-    if (!(navigator.credentials.create && await PublicKeyCredential.isConditionalMediationAvailable)) {
+    if (!(await is_passkey_operation_available())) {
         return false;
     }
 
