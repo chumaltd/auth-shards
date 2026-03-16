@@ -140,6 +140,16 @@ impl SessionManager {
         Ok(())
     }
 
+    pub fn sync_passkey_replace(&self, session: &mut Session, old_id: &str, new_id: &str) {
+        if old_id.is_empty() || new_id.is_empty() {
+            return;
+        }
+
+        if session.get_raw(self.keys.passkey).as_deref() == Some(old_id) {
+            session.insert_raw(self.keys.passkey, new_id.to_string());
+        }
+    }
+
     fn setup_group(
         &self,
         session: &mut Session,
@@ -205,6 +215,10 @@ pub fn get_group(session: &Session) -> Option<Uuid> {
 
 pub fn validate(session: &Session, client: &ClientContext) -> Result<(), SessionError> {
     SessionManager::default().validate(session, client)
+}
+
+pub fn sync_passkey_replace(session: &mut Session, old_id: &str, new_id: &str) {
+    SessionManager::default().sync_passkey_replace(session, old_id, new_id)
 }
 
 #[cfg(test)]
@@ -361,6 +375,33 @@ mod tests {
         assert!(session.expiry().is_none());
         assert!(session.get_raw("stale").is_none());
         assert_eq!(session.get_raw("id").unwrap(), account.id.to_string());
+    }
+
+    #[test]
+    fn test_sync_passkey_replace_updates_matching_current_key() {
+        let manager = SessionManager::default();
+        let mut session = Session::new();
+        session.insert_raw("pk", "old_key".to_string());
+
+        manager.sync_passkey_replace(&mut session, "old_key", "new_key");
+        assert_eq!(session.get_raw("pk").unwrap(), "new_key");
+
+        manager.sync_passkey_replace(&mut session, "different_old", "other_key");
+        assert_eq!(session.get_raw("pk").unwrap(), "new_key");
+    }
+
+    #[test]
+    fn test_sync_passkey_replace_ignores_empty_and_missing_values() {
+        let manager = SessionManager::default();
+        let mut session = Session::new();
+
+        manager.sync_passkey_replace(&mut session, "old_key", "new_key");
+        assert!(session.get_raw("pk").is_none());
+
+        session.insert_raw("pk", "old_key".to_string());
+        manager.sync_passkey_replace(&mut session, "", "new_key");
+        manager.sync_passkey_replace(&mut session, "old_key", "");
+        assert_eq!(session.get_raw("pk").unwrap(), "old_key");
     }
 
     #[tokio::test]

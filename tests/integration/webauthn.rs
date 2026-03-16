@@ -1,4 +1,5 @@
 use crate::common::{setup_user, setup};
+use async_session::Session;
 use base64::prelude::*;
 use pg_pool::pg;
 use serde_json::json;
@@ -20,7 +21,6 @@ use auth_shards::webauthn::{
     delete_password_on_register,
     delete_passkey
 };
-
 
 crate::test! {
     async fn it_generates_challenge_register() {
@@ -229,14 +229,17 @@ crate::test! {
         insert_passkey(&old_cred_id, &uid, &old_passkey_json, "old device", max_count as i8).await.unwrap();
 
         let new_passkey = sample_passkey(Uuid::now_v7().into_bytes().to_vec());
-        let res1 = replace_passkey(&old_id_str, &uid, &new_passkey, "new device").await;
+        let mut session = Session::new();
+        session.insert_raw("pk", old_id_str.clone());
+        let res1 = replace_passkey(&mut session, &old_id_str, &uid, &new_passkey, "new device").await;
         assert!(res1.is_ok());
 
         let row = pg::query_one("SELECT id, description from webauthns where user_id = $1", &[&uid]).await.unwrap();
         assert_eq!(row.get::<_, &[u8]>("id"), new_passkey.cred_id().as_slice());
         assert_eq!(row.get::<_, String>("description"), "new device");
+        assert_eq!(session.get_raw("pk").unwrap(), BASE64_URL_SAFE_NO_PAD.encode(new_passkey.cred_id().as_slice()));
 
-        let res2 = replace_passkey(&old_id_str, &uid, &new_passkey, "new device").await;
+        let res2 = replace_passkey(&mut session, &old_id_str, &uid, &new_passkey, "new device").await;
         assert!(res2.is_err());
         assert_eq!(res2.unwrap_err(), WebAuthnError::NoIdRegistered);
     }
@@ -256,9 +259,12 @@ crate::test! {
         insert_passkey(&existing_cred_id, &uid, &passkey_json, "existing device", max_count as i8).await.unwrap();
 
         let new_passkey = sample_passkey(existing_cred_id.clone());
-        let res = replace_passkey(&old_id_str, &uid, &new_passkey, "duplicated device").await;
+        let mut session = Session::new();
+        session.insert_raw("pk", old_id_str.clone());
+        let res = replace_passkey(&mut session, &old_id_str, &uid, &new_passkey, "duplicated device").await;
         assert!(res.is_err());
         assert_eq!(res.unwrap_err(), WebAuthnError::Rejected);
+        assert_eq!(session.get_raw("pk").unwrap(), old_id_str);
 
         let listed = list_passkeys(&uid).await.unwrap();
         assert_eq!(listed.len(), 1);
@@ -343,8 +349,6 @@ crate::test! {
     }
 }
 
-
-
 async fn insert_sample_passkey(user_id: &Uuid) {
     let cred_id = Uuid::now_v7().into_bytes().to_vec();
     pg::execute("INSERT INTO webauthns (id, credential, user_id)
@@ -387,9 +391,8 @@ fn sample_passkey(cred_id: Vec<u8>) -> Passkey {
     })).unwrap()
 }
 
-pub fn create_webauthn () -> Webauthn {
+pub fn create_webauthn() -> Webauthn {
     let origin = Url::parse("http://localhost/").expect("Invalid origin URL");
-    let builder = WebauthnBuilder::new("localhost", &origin)
-        .expect("Invalid configuration");
+    let builder = WebauthnBuilder::new("localhost", &origin).expect("Invalid configuration");
     builder.build().expect("Invalid configuration")
 }
