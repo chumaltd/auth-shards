@@ -25,21 +25,77 @@ const BRAND_ALLOWLIST: &[&str] = &[
 // Source: https://github.com/passkeydeveloper/passkey-authenticator-aaguids
 // Intentionally trimmed to major cloud/platform authenticators and password managers.
 const KNOWN_PASSKEY_AAGUIDS: &[(&str, &str, &str)] = &[
-    ("adce0002-35bc-c60a-648b-0b25f1f05503", "Chrome on Mac", "Apple Passwords"),
-    ("dd4ec289-e01d-41c9-bb89-70fa845d4bf2", "iCloud Keychain (Managed)", "Apple Passwords"),
-    ("fbfc3007-154e-4ecc-8c0b-6e020557d7bd", "Apple Passwords", "Apple Passwords"),
-    ("ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4", "Google Password Manager", "Google Password Manager"),
-    ("08987058-cadc-4b81-b6e1-30de50dcbe96", "Windows Hello", "Windows Hello"),
-    ("9ddd1817-af5a-4672-a2b9-3e3dd95000a9", "Windows Hello", "Windows Hello"),
-    ("6028b017-b1d4-4c02-b4b3-afcdafc96bb2", "Windows Hello", "Windows Hello"),
-    ("53414d53-554e-4700-0000-000000000000", "Samsung Pass", "Samsung Pass"),
-    ("bada5566-a7aa-401f-bd96-45619a55120d", "1Password", "1Password"),
-    ("531126d6-e717-415c-9320-3d9aa6981239", "Dashlane", "Dashlane"),
-    ("d548826e-79b4-db40-a3d8-11116f7e8349", "Bitwarden", "Bitwarden"),
+    (
+        "adce0002-35bc-c60a-648b-0b25f1f05503",
+        "Chrome on Mac",
+        "Apple Passwords",
+    ),
+    (
+        "dd4ec289-e01d-41c9-bb89-70fa845d4bf2",
+        "iCloud Keychain (Managed)",
+        "Apple Passwords",
+    ),
+    (
+        "fbfc3007-154e-4ecc-8c0b-6e020557d7bd",
+        "Apple Passwords",
+        "Apple Passwords",
+    ),
+    (
+        "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4",
+        "Google Password Manager",
+        "Google Password Manager",
+    ),
+    (
+        "08987058-cadc-4b81-b6e1-30de50dcbe96",
+        "Windows Hello",
+        "Windows Hello",
+    ),
+    (
+        "9ddd1817-af5a-4672-a2b9-3e3dd95000a9",
+        "Windows Hello",
+        "Windows Hello",
+    ),
+    (
+        "6028b017-b1d4-4c02-b4b3-afcdafc96bb2",
+        "Windows Hello",
+        "Windows Hello",
+    ),
+    (
+        "53414d53-554e-4700-0000-000000000000",
+        "Samsung Pass",
+        "Samsung Pass",
+    ),
+    (
+        "bada5566-a7aa-401f-bd96-45619a55120d",
+        "1Password",
+        "1Password",
+    ),
+    (
+        "531126d6-e717-415c-9320-3d9aa6981239",
+        "Dashlane",
+        "Dashlane",
+    ),
+    (
+        "d548826e-79b4-db40-a3d8-11116f7e8349",
+        "Bitwarden",
+        "Bitwarden",
+    ),
     ("0ea242b4-43c4-4a1b-8b17-dd6d0b6baec6", "Keeper", "Keeper"),
-    ("50726f74-6f6e-5061-7373-50726f746f6e", "Proton Pass", "Proton Pass"),
-    ("b84e4048-15dc-4dd0-8640-f4f60813c8af", "NordPass", "NordPass"),
-    ("b78a0a55-6ef8-d246-a042-ba0f6d55050c", "LastPass", "LastPass"),
+    (
+        "50726f74-6f6e-5061-7373-50726f746f6e",
+        "Proton Pass",
+        "Proton Pass",
+    ),
+    (
+        "b84e4048-15dc-4dd0-8640-f4f60813c8af",
+        "NordPass",
+        "NordPass",
+    ),
+    (
+        "b78a0a55-6ef8-d246-a042-ba0f6d55050c",
+        "LastPass",
+        "LastPass",
+    ),
     ("f3809540-7f14-49c1-a8b3-8f813b225541", "Enpass", "Enpass"),
 ];
 
@@ -151,7 +207,8 @@ impl ClientContext {
     /// Helper for callers that want a human-readable passkey/device label.
     /// Lower layers may accept arbitrary caller-provided `device_note` values.
     pub fn device_name(&self, aaguid: Option<&Uuid>) -> String {
-        let provider = aaguid.and_then(resolve_passkey_provider);
+        let provider = aaguid.and_then(resolve_passkey_provider)
+            .or_else(|| aaguid.is_none().then(|| self.infer_platform_provider()).flatten());
         let device_info = self.get_device_info(provider);
 
         match (provider, device_info) {
@@ -171,6 +228,13 @@ impl ClientContext {
             (Some(platform), None) => Some(platform),
             (None, Some(browser)) => Some(browser),
             (None, None) => None,
+        }
+    }
+
+    fn infer_platform_provider(&self) -> Option<&'static str> {
+        match self.platform_family(None).as_deref() {
+            Some("macOS") | Some("iOS") => Some("Apple Passwords"),
+            _ => None,
         }
     }
 
@@ -709,7 +773,7 @@ mod tests {
             model: None,
             ua: Some("Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1".into()),
         };
-        assert_eq!(ctx.device_name(None), "iOS, Safari");
+        assert_eq!(ctx.device_name(None), "Apple Passwords / macOS/iOS, Safari");
     }
 
     #[test]
@@ -722,6 +786,43 @@ mod tests {
         };
         let aaguid = Uuid::parse_str("fbfc3007-154e-4ecc-8c0b-6e020557d7bd").unwrap();
         assert_eq!(ctx.device_name(Some(&aaguid)), "Apple Passwords / macOS/iOS, Chrome");
+    }
+
+    #[test]
+    fn test_device_name_ipad_chrome_without_provider_falls_back_to_apple_passwords() {
+        let ctx = ClientContext {
+            brands: Some("\"Google Chrome\";v=\"135\", \"Chromium\";v=\"135\"".into()),
+            platform: Some("\"macOS\"".into()),
+            model: None,
+            ua: Some("Mozilla/5.0 (iPad; CPU OS 17_4 like Mac OS X) AppleWebKit/537.36 (KHTML, like Gecko) CriOS/135.0.7049.53 Mobile/15E148 Safari/604.1".into()),
+        };
+        assert_eq!(ctx.device_name(None), "Apple Passwords / macOS/iOS, Chrome");
+    }
+
+    #[test]
+    fn test_device_name_android_without_provider_does_not_infer_apple_passwords() {
+        let ctx = ClientContext {
+            brands: Some("\"Google Chrome\";v=\"135\", \"Chromium\";v=\"135\"".into()),
+            platform: Some("\"Android\"".into()),
+            model: Some("\"SM-S938B\"".into()),
+            ua: Some("Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36".into()),
+        };
+        assert_eq!(ctx.device_name(None), "Android, Chrome");
+    }
+
+    #[test]
+    fn test_device_name_with_samsung_pass_provider() {
+        let ctx = ClientContext {
+            brands: Some("\"Google Chrome\";v=\"135\", \"Chromium\";v=\"135\"".into()),
+            platform: Some("\"Android\"".into()),
+            model: Some("\"SM-S938B\"".into()),
+            ua: Some("Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/27.0 Chrome/125.0.6422.165 Mobile Safari/537.36".into()),
+        };
+        let aaguid = Uuid::parse_str("53414d53-554e-4700-0000-000000000000").unwrap();
+        assert_eq!(
+            ctx.device_name(Some(&aaguid)),
+            "Samsung Pass / Android, Chrome"
+        );
     }
 
     #[test]

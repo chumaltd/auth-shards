@@ -2,6 +2,7 @@ use base64::prelude::*;
 use chrono::NaiveDateTime;
 use log::{debug, error};
 use pg_pool::{pg, pgr};
+use serde::{Deserialize, de::IgnoredAny};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_postgres::{types::Type, row::Row};
@@ -107,23 +108,130 @@ pub async fn try_generate_passkey(
 // Passkey { cred: Credential { attestation: ParsedAttestation { metadata: AttestationMetadata { ... } } } }
 // Enums are externally tagged by default: {"Packed": {"aaguid": "..."}}
 pub fn get_aaguid(passkey: &Passkey) -> Option<Uuid> {
-    let val = serde_json::to_value(passkey).ok()?;
-    let metadata = val.get("cred")?.get("attestation")?.get("metadata")?;
-
-    if let Some(packed) = metadata.get("Packed") {
-        return packed
-            .get("aaguid")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse().ok());
-    }
-    if let Some(tpm) = metadata.get("Tpm") {
-        return tpm
-            .get("aaguid")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse().ok());
+    #[derive(Deserialize)]
+    struct StoredPasskey {
+        cred: StoredCredential,
     }
 
-    None
+    #[derive(Deserialize)]
+    struct StoredCredential {
+        attestation: StoredAttestation,
+    }
+
+    #[derive(Deserialize)]
+    struct StoredAttestation {
+        metadata: Option<StoredAttestationMetadata>,
+        data: Option<StoredAttestationData>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StoredAttestationMetadata {
+        Tagged(StoredTaggedAttestationMetadata),
+        Other(IgnoredAny),
+    }
+
+    #[derive(Deserialize)]
+    struct StoredTaggedAttestationMetadata {
+        #[serde(rename = "Packed")]
+        packed: Option<StoredAaguidField>,
+        #[serde(rename = "Tpm")]
+        tpm: Option<StoredAaguidField>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StoredAttestationData {
+        Tagged(StoredTaggedAttestationData),
+        Other(IgnoredAny),
+    }
+
+    #[derive(Deserialize)]
+    struct StoredTaggedAttestationData {
+        #[serde(rename = "Basic")]
+        basic: Option<Vec<String>>,
+    }
+
+    #[derive(Deserialize)]
+    struct StoredAaguidField {
+        aaguid: Option<Uuid>,
+    }
+
+    fn extract_aaguid_from_metadata(metadata: StoredAttestationMetadata) -> Option<Uuid> {
+        match metadata {
+            StoredAttestationMetadata::Tagged(metadata) => metadata.packed
+                .and_then(|packed| packed.aaguid)
+                .or_else(|| metadata.tpm.and_then(|tpm| tpm.aaguid)),
+            StoredAttestationMetadata::Other(_) => None,
+        }
+    }
+
+    fn extract_aaguid_from_attestation_data(data: StoredAttestationData) -> Option<Uuid> {
+        let cert = match data {
+            StoredAttestationData::Tagged(data) => data.basic.and_then(|basic| basic.into_iter().next())?,
+            StoredAttestationData::Other(_) => return None,
+        };
+        let cert = BASE64_URL_SAFE_NO_PAD.decode(cert).ok()?;
+        let (_, cert) = x509_parser::parse_x509_certificate(&cert).ok()?;
+
+        extract_aaguid_from_x509(&cert)
+    }
+
+    let passkey: StoredPasskey =
+        serde_json::from_value(serde_json::to_value(passkey).ok()?).ok()?;
+
+    passkey
+        .cred
+        .attestation
+        .metadata
+        .and_then(extract_aaguid_from_metadata)
+        .or_else(|| {
+            passkey
+                .cred
+                .attestation
+                .data
+                .and_then(extract_aaguid_from_attestation_data)
+        })
+}
+
+fn extract_aaguid_from_x509(cert: &x509_parser::certificate::X509Certificate<'_>) -> Option<Uuid> {
+    const FIDO_AAGUID_EXTENSION_OID: &str = "1.3.6.1.4.1.45724.1.1.4";
+
+    cert.extensions().iter().find_map(|ext| {
+        if ext.oid.to_id_string() != FIDO_AAGUID_EXTENSION_OID {
+            return None;
+        }
+
+        parse_der_octet_string(ext.value).and_then(|bytes| Uuid::from_slice(bytes).ok())
+    })
+}
+
+fn parse_der_octet_string(bytes: &[u8]) -> Option<&[u8]> {
+    let (&tag, rest) = bytes.split_first()?;
+    if tag != 0x04 {
+        return None;
+    }
+
+    let (&len_first, rest) = rest.split_first()?;
+    let (len, value) = if len_first & 0x80 == 0 {
+        (len_first as usize, rest)
+    } else {
+        let len_len = (len_first & 0x7f) as usize;
+        if len_len == 0 || len_len > std::mem::size_of::<usize>() || rest.len() < len_len {
+            return None;
+        }
+
+        let len = rest[..len_len]
+            .iter()
+            .fold(0usize, |acc, byte| (acc << 8) | (*byte as usize));
+        (len, &rest[len_len..])
+    };
+
+    if value.len() != len {
+        return None;
+    }
+
+    Some(value)
 }
 
 // Callers may use helpers such as `ClientContext::device_name` to build `device_note`,
@@ -663,6 +771,51 @@ SELECT u.id AS uid, u.org_id AS oid, u.superuser AS su,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openssl::{
+        asn1::{Asn1Object, Asn1OctetString, Asn1Time},
+        bn::{BigNum, MsbOption},
+        hash::MessageDigest,
+        nid::Nid,
+        pkey::PKey,
+        rsa::Rsa,
+        x509::{X509, X509Extension, X509NameBuilder},
+    };
+
+    fn build_test_attestation_cert(aaguid: &Uuid) -> String {
+        let rsa = Rsa::generate(2048).expect("failed to generate RSA key");
+        let pkey = PKey::from_rsa(rsa).expect("failed to create key");
+
+        let mut builder = X509::builder().expect("failed to create x509 builder");
+        builder.set_version(2).expect("failed to set x509 version");
+
+        let mut serial = BigNum::new().expect("failed to create serial");
+        serial.rand(64, MsbOption::MAYBE_ZERO, false).expect("failed to randomize serial");
+        let serial = serial.to_asn1_integer().expect("failed to convert serial");
+        builder.set_serial_number(&serial).expect("failed to set serial");
+
+        let mut name = X509NameBuilder::new().expect("failed to create subject");
+        name.append_entry_by_nid(Nid::COMMONNAME, "auth-shards test attestation")
+            .expect("failed to set CN");
+        let name = name.build();
+        builder.set_subject_name(&name).expect("failed to set subject");
+        builder.set_issuer_name(&name).expect("failed to set issuer");
+        builder.set_pubkey(&pkey).expect("failed to set pubkey");
+        let not_before = Asn1Time::days_from_now(0).expect("failed to create not_before");
+        builder.set_not_before(&not_before).expect("failed to apply not_before");
+        let not_after = Asn1Time::days_from_now(1).expect("failed to create not_after");
+        builder.set_not_after(&not_after).expect("failed to apply not_after");
+
+        let oid = Asn1Object::from_str("1.3.6.1.4.1.45724.1.1.4").expect("failed to create oid");
+        let mut der = vec![0x04, 0x10];
+        der.extend_from_slice(aaguid.as_bytes());
+        let octets = Asn1OctetString::new_from_bytes(&der).expect("failed to create extension payload");
+        let extension = X509Extension::new_from_der(&oid, false, &octets)
+            .expect("failed to create aaguid extension");
+        builder.append_extension(extension).expect("failed to append extension");
+
+        builder.sign(&pkey, MessageDigest::sha256()).expect("failed to sign cert");
+        BASE64_URL_SAFE_NO_PAD.encode(builder.build().to_der().expect("failed to encode cert"))
+    }
 
     #[test]
     fn test_can_delete_passkey() {
@@ -749,4 +902,37 @@ mod tests {
             serde_json::from_value(val).expect("Failed to parse None Passkey");
         assert!(get_aaguid(&passkey_none).is_none());
     }
+
+    #[test]
+    fn test_get_aaguid_from_attestation_certificate_extension() {
+        let aaguid = Uuid::parse_str("53414d53-554e-4700-0000-000000000000").unwrap();
+        let cert = build_test_attestation_cert(&aaguid);
+        let val = serde_json::json!({
+            "cred": {
+                "cred_id": "YWJj",
+                "cred": {
+                    "type_": "ES256",
+                    "key": { "EC_EC2": { "curve": "SECP256R1", "x": "YWJj", "y": "YWJj" } }
+                },
+                "counter": 0,
+                "user_verified": true,
+                "backup_eligible": false,
+                "backup_state": false,
+                "registration_policy": "required",
+                "extensions": {},
+                "attestation": {
+                    "data": {
+                        "Basic": [cert]
+                    },
+                    "metadata": "None"
+                },
+                "attestation_format": "none"
+            }
+        });
+
+        let passkey: Passkey =
+            serde_json::from_value(val).expect("Failed to parse cert-backed Passkey");
+        assert_eq!(get_aaguid(&passkey), Some(aaguid));
+    }
+
 }
