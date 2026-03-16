@@ -5,6 +5,12 @@ use url::{Position, Url};
 use uuid::Uuid;
 use webauthn_rs_device_catalog::Data;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterMode {
+    PlatformPasskey,
+    AndroidGooglePasswordManager,
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientContext {
     pub brands: Option<String>,   // Sec-CH-UA
@@ -207,8 +213,12 @@ impl ClientContext {
     /// Helper for callers that want a human-readable passkey/device label.
     /// Lower layers may accept arbitrary caller-provided `device_note` values.
     pub fn device_name(&self, aaguid: Option<&Uuid>) -> String {
-        let provider = aaguid.and_then(resolve_passkey_provider)
-            .or_else(|| aaguid.is_none().then(|| self.infer_platform_provider()).flatten());
+        let provider = aaguid.and_then(resolve_passkey_provider).or_else(|| {
+            aaguid
+                .is_none()
+                .then(|| self.infer_platform_provider())
+                .flatten()
+        });
         let device_info = self.get_device_info(provider);
 
         match (provider, device_info) {
@@ -216,6 +226,14 @@ impl ClientContext {
             (Some(auth), None) => auth.to_string(),
             (None, Some(device)) => device,
             (None, None) => "Unknown Device".to_string(),
+        }
+    }
+
+    pub fn register_mode(&self) -> RegisterMode {
+        if self.is_android_chrome_family() {
+            RegisterMode::AndroidGooglePasswordManager
+        } else {
+            RegisterMode::PlatformPasskey
         }
     }
 
@@ -261,6 +279,11 @@ impl ClientContext {
             .and_then(Self::parse_brands_browser)
             .or_else(|| self.ua.as_deref().and_then(Self::parse_ua_browser))
             .map(str::to_string)
+    }
+
+    fn is_android_chrome_family(&self) -> bool {
+        matches!(self.platform_family(None).as_deref(), Some("Android"))
+            && matches!(self.browser_family().as_deref(), Some("Chrome"))
     }
 
     fn normalize_platform_hint(platform: &str) -> Option<&str> {
@@ -427,7 +450,10 @@ pub(crate) fn normalize_redirect_url(url: &str) -> Result<String, RedirectPathEr
 }
 
 pub fn resolve_aaguid_name(uuid: &Uuid) -> Option<String> {
-    if let Some((_, name, _)) = KNOWN_PASSKEY_AAGUIDS.iter().find(|(id, _, _)| *id == uuid.to_string()) {
+    if let Some((_, name, _)) = KNOWN_PASSKEY_AAGUIDS
+        .iter()
+        .find(|(id, _, _)| *id == uuid.to_string())
+    {
         return Some((*name).to_string());
     }
 
@@ -458,7 +484,8 @@ pub fn resolve_aaguid_name(uuid: &Uuid) -> Option<String> {
 }
 
 pub fn resolve_passkey_provider(uuid: &Uuid) -> Option<&'static str> {
-    KNOWN_PASSKEY_AAGUIDS.iter()
+    KNOWN_PASSKEY_AAGUIDS
+        .iter()
         .find(|(id, _, _)| *id == uuid.to_string())
         .map(|(_, _, provider)| *provider)
 }
@@ -683,7 +710,10 @@ mod tests {
             ua: Some("Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1".into()),
         };
         let aaguid = Uuid::parse_str("adce0002-35bc-c60a-648b-0b25f1f05503").unwrap(); // iCloud Keychain
-        assert_eq!(ctx.device_name(Some(&aaguid)), "Apple Passwords / macOS/iOS, Safari");
+        assert_eq!(
+            ctx.device_name(Some(&aaguid)),
+            "Apple Passwords / macOS/iOS, Safari"
+        );
     }
 
     #[test]
@@ -766,6 +796,33 @@ mod tests {
     }
 
     #[test]
+    fn test_register_mode_prefers_android_gpm_on_android_chrome() {
+        let ctx = ClientContext {
+            brands: Some("\"Google Chrome\";v=\"135\", \"Chromium\";v=\"135\"".into()),
+            platform: Some("\"Android\"".into()),
+            model: Some("\"Pixel 9\"".into()),
+            ua: Some("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36".into()),
+        };
+
+        assert_eq!(
+            ctx.register_mode(),
+            RegisterMode::AndroidGooglePasswordManager
+        );
+    }
+
+    #[test]
+    fn test_register_mode_keeps_platform_mode_for_android_firefox() {
+        let ctx = ClientContext {
+            brands: Some("\"Firefox\";v=\"135\"".into()),
+            platform: Some("\"Android\"".into()),
+            model: Some("\"Pixel 9\"".into()),
+            ua: Some("Mozilla/5.0 (Android 15; Mobile; rv:135.0) Gecko/135.0 Firefox/135.0".into()),
+        };
+
+        assert_eq!(ctx.register_mode(), RegisterMode::PlatformPasskey);
+    }
+
+    #[test]
     fn test_device_name_ipad_prefers_ios_family() {
         let ctx = ClientContext {
             brands: None,
@@ -785,7 +842,10 @@ mod tests {
             ua: Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36".into()),
         };
         let aaguid = Uuid::parse_str("fbfc3007-154e-4ecc-8c0b-6e020557d7bd").unwrap();
-        assert_eq!(ctx.device_name(Some(&aaguid)), "Apple Passwords / macOS/iOS, Chrome");
+        assert_eq!(
+            ctx.device_name(Some(&aaguid)),
+            "Apple Passwords / macOS/iOS, Chrome"
+        );
     }
 
     #[test]

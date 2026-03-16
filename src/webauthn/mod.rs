@@ -1,3 +1,9 @@
+use crate::{
+    AuthType, RegisterMode,
+    account::{AccountError, login_trace},
+    session::sync_passkey_replace,
+};
+use async_session::Session;
 use base64::prelude::*;
 use chrono::NaiveDateTime;
 use log::{debug, error};
@@ -5,24 +11,16 @@ use pg_pool::{pg, pgr};
 use serde::{Deserialize, de::IgnoredAny};
 use thiserror::Error;
 use tokio::task::JoinHandle;
-use tokio_postgres::{types::Type, row::Row};
+use tokio_postgres::{row::Row, types::Type};
 use uuid::Uuid;
 use webauthn_rs::{
     Webauthn,
     prelude::{
-        CredentialID, Passkey, DiscoverableKey,
-        CreationChallengeResponse,
-        RequestChallengeResponse,
-        PasskeyRegistration, DiscoverableAuthentication, AuthenticationResult,
-        PublicKeyCredential, RegisterPublicKeyCredential, PasskeyAuthentication
-    }
+        AuthenticationResult, CreationChallengeResponse, CredentialID, DiscoverableAuthentication,
+        DiscoverableKey, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
+        RegisterPublicKeyCredential, RequestChallengeResponse,
+    },
 };
-use crate::{
-    AuthType,
-    account::{AccountError, login_trace},
-    session::sync_passkey_replace,
-};
-use async_session::Session;
 
 #[derive(Error, Debug, PartialEq)]
 pub enum WebAuthnError {
@@ -54,6 +52,23 @@ pub async fn generate_challenge_register(
     uid: Uuid,
     max_count: u8,
 ) -> Result<(CreationChallengeResponse, String), WebAuthnError> {
+    generate_challenge_register_with_mode(
+        wa,
+        check_duplicate,
+        uid,
+        max_count,
+        RegisterMode::PlatformPasskey,
+    )
+    .await
+}
+
+pub async fn generate_challenge_register_with_mode(
+    wa: &Webauthn,
+    check_duplicate: bool,
+    uid: Uuid,
+    max_count: u8,
+    mode: RegisterMode,
+) -> Result<(CreationChallengeResponse, String), WebAuthnError> {
     let rows = pgr::query(
         r#"SELECT u.name, u.email, count(w.id)::smallint AS keys
          FROM users u LEFT JOIN webauthns w on u.id = w.user_id
@@ -78,12 +93,23 @@ pub async fn generate_challenge_register(
         false => None,
     };
 
-    let (challenge_res, reg_state) = wa
-        .start_passkey_registration(uid, &uname, &udisp, credentials)
-        .map_err(|e| {
-            debug!("{:?}", e);
-            WebAuthnError::Rejected
-        })?;
+    let registration = match mode {
+        RegisterMode::PlatformPasskey => {
+            wa.start_passkey_registration(uid, &uname, &udisp, credentials)
+        }
+        RegisterMode::AndroidGooglePasswordManager => wa
+            .start_google_passkey_in_google_password_manager_only_registration(
+                uid,
+                &uname,
+                &udisp,
+                credentials,
+            ),
+    };
+
+    let (challenge_res, reg_state) = registration.map_err(|e| {
+        debug!("{:?}", e);
+        WebAuthnError::Rejected
+    })?;
     // NOTE: feature danger-allow-state-serialisation required
     let reg_json = serde_json::to_string(&reg_state).map_err(|_e| WebAuthnError::Serde)?;
 
@@ -159,7 +185,8 @@ pub fn get_aaguid(passkey: &Passkey) -> Option<Uuid> {
 
     fn extract_aaguid_from_metadata(metadata: StoredAttestationMetadata) -> Option<Uuid> {
         match metadata {
-            StoredAttestationMetadata::Tagged(metadata) => metadata.packed
+            StoredAttestationMetadata::Tagged(metadata) => metadata
+                .packed
                 .and_then(|packed| packed.aaguid)
                 .or_else(|| metadata.tpm.and_then(|tpm| tpm.aaguid)),
             StoredAttestationMetadata::Other(_) => None,
@@ -168,7 +195,9 @@ pub fn get_aaguid(passkey: &Passkey) -> Option<Uuid> {
 
     fn extract_aaguid_from_attestation_data(data: StoredAttestationData) -> Option<Uuid> {
         let cert = match data {
-            StoredAttestationData::Tagged(data) => data.basic.and_then(|basic| basic.into_iter().next())?,
+            StoredAttestationData::Tagged(data) => {
+                data.basic.and_then(|basic| basic.into_iter().next())?
+            }
             StoredAttestationData::Other(_) => return None,
         };
         let cert = BASE64_URL_SAFE_NO_PAD.decode(cert).ok()?;
@@ -308,13 +337,13 @@ pub async fn replace_passkey(
     delete_id: &str,
     uid: &Uuid,
     new_key: &Passkey,
-    device_note: &str
+    device_note: &str,
 ) -> Result<(), WebAuthnError> {
-    let delete_id_bytes: Vec<u8> = BASE64_URL_SAFE_NO_PAD.decode(delete_id)
+    let delete_id_bytes: Vec<u8> = BASE64_URL_SAFE_NO_PAD
+        .decode(delete_id)
         .map_err(|_e| WebAuthnError::Serde)?;
 
-    let passkey_json = serde_json::to_value(&new_key)
-        .map_err(|e| {
+    let passkey_json = serde_json::to_value(&new_key).map_err(|e| {
         error!("{:?}", e);
         WebAuthnError::Serde
     })?;
@@ -342,10 +371,11 @@ pub async fn replace_passkey(
             &delete_id_bytes,
             &new_key.cred_id().as_slice(),
             &passkey_json,
-            &device_note
+            &device_note,
         ],
-    ).await
-        .map_err(|e| {
+    )
+    .await
+    .map_err(|e| {
         error!("replace_passkey: {e}");
         WebAuthnError::Db
     })?;
@@ -789,31 +819,48 @@ mod tests {
         builder.set_version(2).expect("failed to set x509 version");
 
         let mut serial = BigNum::new().expect("failed to create serial");
-        serial.rand(64, MsbOption::MAYBE_ZERO, false).expect("failed to randomize serial");
+        serial
+            .rand(64, MsbOption::MAYBE_ZERO, false)
+            .expect("failed to randomize serial");
         let serial = serial.to_asn1_integer().expect("failed to convert serial");
-        builder.set_serial_number(&serial).expect("failed to set serial");
+        builder
+            .set_serial_number(&serial)
+            .expect("failed to set serial");
 
         let mut name = X509NameBuilder::new().expect("failed to create subject");
         name.append_entry_by_nid(Nid::COMMONNAME, "auth-shards test attestation")
             .expect("failed to set CN");
         let name = name.build();
-        builder.set_subject_name(&name).expect("failed to set subject");
-        builder.set_issuer_name(&name).expect("failed to set issuer");
+        builder
+            .set_subject_name(&name)
+            .expect("failed to set subject");
+        builder
+            .set_issuer_name(&name)
+            .expect("failed to set issuer");
         builder.set_pubkey(&pkey).expect("failed to set pubkey");
         let not_before = Asn1Time::days_from_now(0).expect("failed to create not_before");
-        builder.set_not_before(&not_before).expect("failed to apply not_before");
+        builder
+            .set_not_before(&not_before)
+            .expect("failed to apply not_before");
         let not_after = Asn1Time::days_from_now(1).expect("failed to create not_after");
-        builder.set_not_after(&not_after).expect("failed to apply not_after");
+        builder
+            .set_not_after(&not_after)
+            .expect("failed to apply not_after");
 
         let oid = Asn1Object::from_str("1.3.6.1.4.1.45724.1.1.4").expect("failed to create oid");
         let mut der = vec![0x04, 0x10];
         der.extend_from_slice(aaguid.as_bytes());
-        let octets = Asn1OctetString::new_from_bytes(&der).expect("failed to create extension payload");
+        let octets =
+            Asn1OctetString::new_from_bytes(&der).expect("failed to create extension payload");
         let extension = X509Extension::new_from_der(&oid, false, &octets)
             .expect("failed to create aaguid extension");
-        builder.append_extension(extension).expect("failed to append extension");
+        builder
+            .append_extension(extension)
+            .expect("failed to append extension");
 
-        builder.sign(&pkey, MessageDigest::sha256()).expect("failed to sign cert");
+        builder
+            .sign(&pkey, MessageDigest::sha256())
+            .expect("failed to sign cert");
         BASE64_URL_SAFE_NO_PAD.encode(builder.build().to_der().expect("failed to encode cert"))
     }
 
@@ -934,5 +981,4 @@ mod tests {
             serde_json::from_value(val).expect("Failed to parse cert-backed Passkey");
         assert_eq!(get_aaguid(&passkey), Some(aaguid));
     }
-
 }

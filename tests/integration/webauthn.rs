@@ -1,4 +1,4 @@
-use crate::common::{setup_user, setup};
+use crate::common::{setup, setup_user};
 use async_session::Session;
 use base64::prelude::*;
 use pg_pool::pg;
@@ -6,21 +6,16 @@ use serde_json::json;
 use uuid::Uuid;
 use webauthn_rs::{
     Webauthn, WebauthnBuilder,
-    prelude::{Passkey, Url}
+    prelude::{Passkey, Url},
 };
 
 use auth_shards::webauthn::{
-    PasskeyRecord,
-    WebAuthnError,
-    generate_challenge_register,
-    generate_challenge_authentication,
-    insert_passkey,
-    list_passkeys,
-    rename_passkey,
+    PasskeyRecord, WebAuthnError, delete_passkey, delete_password_on_register,
+    generate_challenge_authentication, generate_challenge_register,
+    generate_challenge_register_with_mode, insert_passkey, list_passkeys, rename_passkey,
     replace_passkey,
-    delete_password_on_register,
-    delete_passkey
 };
+use auth_shards::{ClientContext, RegisterMode};
 
 crate::test! {
     async fn it_generates_challenge_register() {
@@ -71,6 +66,45 @@ crate::test! {
             .and_then(|v| v.as_array());
         assert!(duplicate_check.is_none() || duplicate_check.unwrap().is_empty());
         assert!(!reg_state3.is_empty());
+    }
+
+    async fn it_generates_android_gpm_register_challenge() {
+        let _pool = setup().await;
+        let wa = create_webauthn();
+        let (uid, _uname) = setup_user().await;
+
+        let ctx = ClientContext {
+            brands: Some("\"Google Chrome\";v=\"135\", \"Chromium\";v=\"135\"".into()),
+            platform: Some("\"Android\"".into()),
+            model: Some("\"Pixel 9\"".into()),
+            ua: Some("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36".into()),
+        };
+        assert_eq!(ctx.register_mode(), RegisterMode::AndroidGooglePasswordManager);
+
+        let (challenge, reg_state) = generate_challenge_register_with_mode(
+            &wa,
+            true,
+            uid,
+            5,
+            ctx.register_mode(),
+        )
+        .await
+        .unwrap();
+
+        let public_key = serde_json::to_value(&challenge).unwrap()["publicKey"].clone();
+        assert_eq!(
+            public_key["authenticatorSelection"]["authenticatorAttachment"].as_str(),
+            Some("platform")
+        );
+        assert_eq!(
+            public_key["authenticatorSelection"]["residentKey"].as_str(),
+            Some("required")
+        );
+        assert_eq!(
+            public_key["hints"].as_array().and_then(|hints| hints.first()).and_then(|hint| hint.as_str()),
+            Some("client-device")
+        );
+        assert!(!reg_state.is_empty());
     }
 
     async fn it_limits_inserting_keys() {

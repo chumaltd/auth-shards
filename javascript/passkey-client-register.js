@@ -24,15 +24,6 @@ export async function load_challenge(source, replace = false) {
     registerOptions = await Promise.resolve(response)
         .then(r => parse_request(r.publicKey));
 
-    // Common configuration
-    registerOptions.authenticatorSelection = registerOptions.authenticatorSelection || {};
-    registerOptions.authenticatorSelection['authenticatorAttachment'] = "platform";
-    registerOptions.authenticatorSelection['residentKey'] = "preferred";
-    registerOptions.authenticatorSelection['userVerification'] = "preferred";
-    if (registerOptions.authenticatorSelection.requireResidentKey !== undefined) {
-        delete registerOptions.authenticatorSelection.requireResidentKey;
-    }
-
     return registerOptions;
 }
 

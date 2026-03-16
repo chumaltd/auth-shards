@@ -1,9 +1,6 @@
-use crate::common::{get_chromium_page, setup, setup_user, setup_console_tracker};
+use crate::common::{get_chromium_page, setup, setup_console_tracker, setup_user};
 use auth_shards::webauthn::{
-    delete_passkey,
-    generate_challenge_authentication,
-    generate_challenge_register,
-    WebAuthnError,
+    WebAuthnError, delete_passkey, generate_challenge_authentication, generate_challenge_register,
 };
 use base64::prelude::*;
 use log::debug;
@@ -13,10 +10,7 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use warp::Filter;
-use webauthn_rs::prelude::{
-    CreationChallengeResponse as Challenge,
-    Passkey
-};
+use webauthn_rs::prelude::{CreationChallengeResponse as Challenge, Passkey};
 
 // Mock State to hold challenge data between requests
 pub(crate) struct MockState {
@@ -31,7 +25,6 @@ pub(crate) struct MockState {
 #[derive(Debug)]
 pub(crate) struct WebAuthnTestError;
 impl warp::reject::Reject for WebAuthnTestError {}
-
 
 crate::test! {
     async fn it_registers_and_authenticates_passkey_l3() {
@@ -54,11 +47,11 @@ crate::test! {
 async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_url: bool) {
     let fallback_param = match fallback {
         true => "&force_fallback=1",
-        false => ""
+        false => "",
     };
     let challenge_source_param = match challenge_via_url {
         true => "&challenge_source=url",
-        false => ""
+        false => "",
     };
     let _pool = setup().await;
     let (uid1, uname1) = setup_user().await;
@@ -79,11 +72,13 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         .expect("Chromium browser is required for passkey browser tests");
 
     // --- REGISTRATION ---
-    let reg_url = format!("http://localhost:{port}/register.html?{fallback_param}{challenge_source_param}");
+    let reg_url =
+        format!("http://localhost:{port}/register.html?{fallback_param}{challenge_source_param}");
 
     page.goto(&reg_url, None).await.unwrap();
     setup_console_tracker(&page).await;
-    let _ws_stream = crate::common::setup_chromium_virtual_authenticator(cdp_port, Some("localhost")).await;
+    let _ws_stream =
+        crate::common::setup_chromium_virtual_authenticator(cdp_port, Some("localhost")).await;
 
     page.goto(&reg_url, None).await.unwrap();
     let btn_l3 = page.locator("#btn-register").await;
@@ -94,26 +89,44 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     crate::assert_no_console_errors!(&page);
 
     expect(page.locator("body#account").await)
-        .to_be_visible().await.unwrap();
-    assert!(page.url().contains("passkey_registered"), "[L3] Redirect failed, stuck on {}", page.url());
+        .to_be_visible()
+        .await
+        .unwrap();
+    assert!(
+        page.url().contains("passkey_registered"),
+        "[L3] Redirect failed, stuck on {}",
+        page.url()
+    );
     {
         let lock = state.lock().unwrap();
         let expected = if challenge_via_url { 2 } else { 0 };
-        assert_eq!(lock.register_challenge_requests, expected, "unexpected register challenge source usage");
+        assert_eq!(
+            lock.register_challenge_requests, expected,
+            "unexpected register challenge source usage"
+        );
     }
-    let row1 = pg::query_one("select credential from webauthns where user_id = $1",
-                             &[&uid1]).await.unwrap();
+    let row1 = pg::query_one(
+        "select credential from webauthns where user_id = $1",
+        &[&uid1],
+    )
+    .await
+    .unwrap();
     let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
     assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
 
     // --- Authentication - EXPLICIT BUTTON CLICK ---
-    let auth_url = format!("http://localhost:{port}/login.html?disable_conditional=1{fallback_param}{challenge_source_param}");
+    let auth_url = format!(
+        "http://localhost:{port}/login.html?disable_conditional=1{fallback_param}{challenge_source_param}"
+    );
     {
         let mut lock = state.lock().unwrap();
         lock.username = Some(email1.clone());
     }
     page.goto(&auth_url, None).await.unwrap();
-    expect(page.locator("#btn-auth").await).to_be_enabled().await.unwrap();
+    expect(page.locator("#btn-auth").await)
+        .to_be_enabled()
+        .await
+        .unwrap();
     let btn_auth = page.locator("#btn-auth").await;
     btn_auth.click(None).await.unwrap();
 
@@ -122,20 +135,36 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     crate::assert_no_console_errors!(&page);
 
     expect(page.locator("body#account").await)
-        .to_be_visible().await.unwrap();
+        .to_be_visible()
+        .await
+        .unwrap();
 
-    assert!(page.url().contains("authenticated"), "Auth 1 redirect failed, stuck on {}", page.url());
+    assert!(
+        page.url().contains("authenticated"),
+        "Auth 1 redirect failed, stuck on {}",
+        page.url()
+    );
     {
         let lock = state.lock().unwrap();
         let expected = if challenge_via_url { 1 } else { 0 };
-        assert_eq!(lock.auth_challenge_requests, expected, "unexpected auth challenge source usage after button flow");
+        assert_eq!(
+            lock.auth_challenge_requests, expected,
+            "unexpected auth challenge source usage after button flow"
+        );
     }
 
     // --- Guard from deletion ---
     let id = BASE64_URL_SAFE_NO_PAD.encode(passkey.cred_id().as_slice());
-    assert_eq!(Err(WebAuthnError::Rejected), delete_passkey(&id, &uid1).await);
-    let row1 = pg::query_one("select credential from webauthns where user_id = $1",
-                             &[&uid1]).await.unwrap();
+    assert_eq!(
+        Err(WebAuthnError::Rejected),
+        delete_passkey(&id, &uid1).await
+    );
+    let row1 = pg::query_one(
+        "select credential from webauthns where user_id = $1",
+        &[&uid1],
+    )
+    .await
+    .unwrap();
     let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
     assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
 
@@ -144,7 +173,8 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         let mut lock = state.lock().unwrap();
         lock.username = Some(email1.clone());
     }
-    let auth_url2 = format!("http://localhost:{port}/login.html?{fallback_param}{challenge_source_param}");
+    let auth_url2 =
+        format!("http://localhost:{port}/login.html?{fallback_param}{challenge_source_param}");
     page.goto(&auth_url2, None).await.unwrap();
 
     // Wait for conditional UI to finish automatically due to CPD
@@ -152,13 +182,22 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     crate::assert_no_console_errors!(&page);
 
     expect(page.locator("body#account").await)
-        .to_be_visible().await.unwrap();
+        .to_be_visible()
+        .await
+        .unwrap();
 
-    assert!(page.url().contains("authenticated"), "Auth 2 redirect failed, stuck on {}", page.url());
+    assert!(
+        page.url().contains("authenticated"),
+        "Auth 2 redirect failed, stuck on {}",
+        page.url()
+    );
     {
         let lock = state.lock().unwrap();
         let expected = if challenge_via_url { 2 } else { 0 };
-        assert_eq!(lock.auth_challenge_requests, expected, "unexpected auth challenge source usage after conditional flow");
+        assert_eq!(
+            lock.auth_challenge_requests, expected,
+            "unexpected auth challenge source usage after conditional flow"
+        );
     }
 
     crate::assert_no_console_errors!(&page);
@@ -189,6 +228,8 @@ fn render_register_html(challenge_json: &str) -> String {
                     if (options?.publicKey) {
                         if (options.publicKey.authenticatorSelection) {
                             delete options.publicKey.authenticatorSelection.authenticatorAttachment;
+                            options.publicKey.authenticatorSelection.userVerification = 'preferred';
+                            options.publicKey.authenticatorSelection.residentKey = 'preferred';
                         }
                         if (options.publicKey.extensions) {
                             delete options.publicKey.extensions.credentialProtectionPolicy;
@@ -218,6 +259,8 @@ fn render_register_html(challenge_json: &str) -> String {
                 PublicKeyCredential.parseCreationOptionsFromJSON = function(json) {
                     if (json?.authenticatorSelection) {
                         delete json.authenticatorSelection.authenticatorAttachment;
+                        json.authenticatorSelection.userVerification = 'preferred';
+                        json.authenticatorSelection.residentKey = 'preferred';
                     }
                     if (json?.extensions) {
                         delete json.extensions.credentialProtectionPolicy;
@@ -290,7 +333,9 @@ fn render_login_html(challenge_json: &str) -> String {
     TEMPLATE.replace("__CHALLENGE__", challenge_json)
 }
 
-pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16, webauthn_rs::Webauthn) {
+pub(crate) async fn start_webauthn_server(
+    state: Arc<Mutex<MockState>>,
+) -> (u16, webauthn_rs::Webauthn) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
@@ -301,50 +346,52 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
 
     let state_html_reg = state.clone();
     let wa_html_reg = wa.clone();
-    let route_html_reg = warp::path("register.html")
-        .and_then(move || {
-            let state = state_html_reg.clone();
-            let wa = wa_html_reg.clone();
-            async move {
-                let uid = state.lock().unwrap().user_id.unwrap();
-                let (challenge, reg_state) = generate_challenge_register(&wa, true, uid, 1)
-                    .await
-                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
-                let mut lock = state.lock().unwrap();
-                lock.challenge = Some(challenge.clone());
-                lock.reg_state = Some(reg_state);
-                let challenge_json = escape_html_attr(&serde_json::to_string(&challenge).unwrap());
-                let html_reg = render_register_html(&challenge_json);
-                Ok::<_, warp::Rejection>(warp::reply::html(html_reg))
-            }
-        });
+    let route_html_reg = warp::path("register.html").and_then(move || {
+        let state = state_html_reg.clone();
+        let wa = wa_html_reg.clone();
+        async move {
+            let uid = state.lock().unwrap().user_id.unwrap();
+            let (challenge, reg_state) = generate_challenge_register(&wa, true, uid, 1)
+                .await
+                .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+            let mut lock = state.lock().unwrap();
+            lock.challenge = Some(challenge.clone());
+            lock.reg_state = Some(reg_state);
+            let challenge_json = escape_html_attr(&serde_json::to_string(&challenge).unwrap());
+            let html_reg = render_register_html(&challenge_json);
+            Ok::<_, warp::Rejection>(warp::reply::html(html_reg))
+        }
+    });
 
     let state_html_login = state.clone();
     let wa_html_login = wa.clone();
-    let route_html_login = warp::path("login.html")
-        .and_then(move || {
-            let state = state_html_login.clone();
-            let wa = wa_html_login.clone();
-            async move {
-                let email = state.lock().unwrap().username.clone();
-                let (challenge, auth_state) = generate_challenge_authentication(&wa, email.as_deref())
-                    .await
-                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
-                let mut lock = state.lock().unwrap();
-                lock.reg_state = Some(auth_state);
-                let challenge_json = escape_html_attr(&serde_json::to_string(&challenge).unwrap());
-                let html_login = render_login_html(&challenge_json);
-                Ok::<_, warp::Rejection>(warp::reply::html(html_login))
-            }
-        });
+    let route_html_login = warp::path("login.html").and_then(move || {
+        let state = state_html_login.clone();
+        let wa = wa_html_login.clone();
+        async move {
+            let email = state.lock().unwrap().username.clone();
+            let (challenge, auth_state) = generate_challenge_authentication(&wa, email.as_deref())
+                .await
+                .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+            let mut lock = state.lock().unwrap();
+            lock.reg_state = Some(auth_state);
+            let challenge_json = escape_html_attr(&serde_json::to_string(&challenge).unwrap());
+            let html_login = render_login_html(&challenge_json);
+            Ok::<_, warp::Rejection>(warp::reply::html(html_login))
+        }
+    });
 
-    let js_reg = std::fs::read_to_string("javascript/passkey-client-register.js").expect("Failed to read JS");
-    let route_js_reg = warp::path("passkey-client-register.js")
-        .map(move || warp::reply::with_header(js_reg.clone(), "Content-Type", "application/javascript"));
+    let js_reg = std::fs::read_to_string("javascript/passkey-client-register.js")
+        .expect("Failed to read JS");
+    let route_js_reg = warp::path("passkey-client-register.js").map(move || {
+        warp::reply::with_header(js_reg.clone(), "Content-Type", "application/javascript")
+    });
 
-    let js_auth = std::fs::read_to_string("javascript/passkey-client-authn.js").expect("Failed to read JS");
-    let route_js_auth = warp::path("passkey-client-authn.js")
-        .map(move || warp::reply::with_header(js_auth.clone(), "Content-Type", "application/javascript"));
+    let js_auth =
+        std::fs::read_to_string("javascript/passkey-client-authn.js").expect("Failed to read JS");
+    let route_js_auth = warp::path("passkey-client-authn.js").map(move || {
+        warp::reply::with_header(js_auth.clone(), "Content-Type", "application/javascript")
+    });
 
     let state_clone = state.clone();
     let wa_reg = wa.clone();
@@ -355,9 +402,10 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
             let wa = wa_reg.clone();
             async move {
                 let uid = state.lock().unwrap().user_id.unwrap();
-                let (challenge, reg_state) = generate_challenge_register(&wa, true, uid, 1)
-                    .await
-                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+                let (challenge, reg_state) =
+                    generate_challenge_register(&wa, true, uid, 1)
+                        .await
+                        .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
                 let mut lock = state.lock().unwrap();
                 lock.register_challenge_requests += 1;
                 lock.challenge = Some(challenge.clone());
@@ -386,15 +434,18 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     (uid, reg_state)
                 };
 
-                let reg: webauthn_rs::prelude::RegisterPublicKeyCredential = match serde_json::from_value(body.clone()) {
-                    Ok(r) => r,
-                    Err(_) => return Err(warp::reject::custom(WebAuthnTestError)),
-                };
+                let reg: webauthn_rs::prelude::RegisterPublicKeyCredential =
+                    match serde_json::from_value(body.clone()) {
+                        Ok(r) => r,
+                        Err(_) => return Err(warp::reject::custom(WebAuthnTestError)),
+                    };
 
-                let passkey = auth_shards::webauthn::try_generate_passkey(&wa, &reg, &reg_state).await
+                let passkey = auth_shards::webauthn::try_generate_passkey(&wa, &reg, &reg_state)
+                    .await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
 
-                auth_shards::webauthn::register_passkey(&uid, &passkey, "Unknown Device", 10).await
+                auth_shards::webauthn::register_passkey(&uid, &passkey, "Unknown Device", 10)
+                    .await
                     .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
 
                 Ok::<_, warp::Rejection>(warp::reply::json(&json!({ "status": "ok" })))
@@ -410,9 +461,10 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
             let wa = wa_auth.clone();
             async move {
                 let email = state.lock().unwrap().username.clone();
-                let (challenge, auth_state) = generate_challenge_authentication(&wa, email.as_deref())
-                    .await
-                    .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
+                let (challenge, auth_state) =
+                    generate_challenge_authentication(&wa, email.as_deref())
+                        .await
+                        .map_err(|_| warp::reject::custom(WebAuthnTestError))?;
                 let mut lock = state.lock().unwrap();
                 lock.auth_challenge_requests += 1;
                 lock.reg_state = Some(auth_state);
@@ -433,19 +485,26 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
                     let mut lock = state.lock().unwrap();
                     match lock.reg_state.take() {
                         Some(s) => s,
-                        None => return Ok::<_, warp::Rejection>(warp::reply::json(&json!({ "status": "ok" }))),
+                        None => {
+                            return Ok::<_, warp::Rejection>(warp::reply::json(
+                                &json!({ "status": "ok" }),
+                            ));
+                        }
                     }
                 };
 
-                let cred: webauthn_rs::prelude::PublicKeyCredential = match serde_json::from_value(body.clone()) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        debug!("[Server] JSON Parse Error: {:?}", e);
-                        return Err(warp::reject::custom(WebAuthnTestError));
-                    }
-                };
+                let cred: webauthn_rs::prelude::PublicKeyCredential =
+                    match serde_json::from_value(body.clone()) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            debug!("[Server] JSON Parse Error: {:?}", e);
+                            return Err(warp::reject::custom(WebAuthnTestError));
+                        }
+                    };
 
-                if let Err(e) = auth_shards::webauthn::authenticate_named_passkey(&wa, &cred, &auth_state).await {
+                if let Err(e) =
+                    auth_shards::webauthn::authenticate_named_passkey(&wa, &cred, &auth_state).await
+                {
                     panic!("[Server] EXACT AUTH FAILED REASON: {:#?}", e);
                 }
 
@@ -456,7 +515,10 @@ pub(crate) async fn start_webauthn_server(state: Arc<Mutex<MockState>>) -> (u16,
     let route_account = warp::path!("auth" / "account")
         .map(|| warp::reply::html("<html><body id=\"account\">Account Page (Stub)</body></html>"));
 
-    let routes = route_html_reg.or(route_html_login).or(route_js_reg).or(route_js_auth)
+    let routes = route_html_reg
+        .or(route_html_login)
+        .or(route_js_reg)
+        .or(route_js_auth)
         .or(route_reg_challenge)
         .or(route_reg_apply)
         .or(route_auth_challenge)

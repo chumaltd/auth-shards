@@ -1,11 +1,12 @@
 pub mod account;
 pub mod password;
 pub mod session;
-pub mod webauthn;
 mod util;
+pub mod webauthn;
 
-pub use util::abs_path;
 pub use util::ClientContext;
+pub use util::RegisterMode;
+pub use util::abs_path;
 pub use util::normalize_return_path;
 pub use util::normalize_return_url;
 pub use util::resolve_aaguid_name;
@@ -54,24 +55,22 @@ impl From<u8> for AuthType {
             5 => AuthType::OpenidGoog,
             6 => AuthType::PassKey("".into()),
             7 => AuthType::AccessToken,
-            _ => AuthType::Unknown
+            _ => AuthType::Unknown,
         }
     }
 }
 
 impl From<&str> for AuthType {
     fn from(origin: &str) -> Self {
-        origin.parse::<u8>().unwrap_or(0)
-            .into()
+        origin.parse::<u8>().unwrap_or(0).into()
     }
 }
 
 impl From<Option<String>> for AuthType {
     fn from(origin: Option<String>) -> Self {
         match origin {
-            Some(via) => via.parse::<u8>().unwrap_or(0)
-                .into(),
-            None => AuthType::Unknown
+            Some(via) => via.parse::<u8>().unwrap_or(0).into(),
+            None => AuthType::Unknown,
         }
     }
 }
