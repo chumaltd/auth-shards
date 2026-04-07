@@ -3,6 +3,7 @@ pub mod password;
 pub mod session;
 mod util;
 pub mod webauthn;
+pub mod mailauth;
 
 pub use util::ClientContext;
 pub use util::RegisterMode;
