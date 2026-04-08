@@ -17,10 +17,10 @@ static DNS_RESOLVER: LazyLock<TokioResolver> = LazyLock::new(|| {
     builder.build().expect("DNS resolver couldn't be built")
 });
 
-pub async fn check_valid_email(address: &str) -> Result<bool, &'static str> {
+pub async fn check_valid_email(address: &str) -> Result<(bool, String), &'static str> {
     let addr = parse_email(address);
-    if addr.is_err() {
-        return Ok(false);
+    if let Err(message) = addr {
+        return Ok((false, message));
     }
     let addr = addr.unwrap();
 
@@ -30,25 +30,25 @@ pub async fn check_valid_email(address: &str) -> Result<bool, &'static str> {
     Ok(valid_mx)
 }
 
-fn parse_email(address: &str) -> Result<AddrSpec, &'static str> {
+fn parse_email(address: &str) -> Result<AddrSpec, String> {
     let addr: AddrSpec = address.parse().map_err(|_| "invalid addr-spec")?;
     if !addr.local_part().is_ascii() || !addr.domain().is_ascii() {
-        return Err("non-ASCII addresses are not accepted");
+        return Err("non-ASCII addresses are not accepted".to_string());
     }
 
     let domain = addr.domain().to_string();
 
     if domain.starts_with('[') && domain.ends_with(']') {
-        return Err("domain literal not allowed");
+        return Err(format!("domain literal not allowed: {domain}"));
     }
 
     if !domain.contains('.') {
-        return Err("single-label domain not allowed");
+        return Err(format!("single-label domain not allowed: {domain}"));
     }
 
     let labels: Vec<&str> = domain.split('.').collect();
     if labels.iter().any(|l| l.is_empty()) {
-        return Err("empty domain label");
+        return Err(format!("empty domain label: {domain}"));
     }
 
     Ok(addr)
@@ -56,7 +56,7 @@ fn parse_email(address: &str) -> Result<AddrSpec, &'static str> {
 
 async fn resolve_mx_status(
     domain: &str,
-) -> Result<bool, NetError> {
+) -> Result<(bool, String), NetError> {
     let normalized = domain.trim().trim_end_matches('.').to_ascii_lowercase();
     let fqdn = format!("{normalized}.");
     let lookup = DNS_RESOLVER.mx_lookup(fqdn).await;
@@ -64,10 +64,10 @@ async fn resolve_mx_status(
     match lookup {
         Ok(_) => {
             // TODO handle Null MX, inspecting low level RDATA
-            Ok(true)
+            Ok((true, domain.to_string()))
         },
-        Err(e) if e.is_no_records_found() => Ok(false),
-        Err(e) if e.is_nx_domain() => Ok(false),
+        Err(e) if e.is_no_records_found() => Ok((false, format!("No records found: {domain}"))),
+        Err(e) if e.is_nx_domain() => Ok((false, format!("NX domain: {domain}"))),
         Err(e) => Err(e)
     }
 }
