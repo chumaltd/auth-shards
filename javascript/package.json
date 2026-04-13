@@ -1,0 +1,10 @@
+{
+  "name": "auth-shards",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+	  "./passkey-client-authn.js": "passkey-client-authn.js",
+	  "./passkey-client-register.js": "passkey-client-register.js",
+	  "./passkey-client-util.js": "passkey-client-util.js"
+  }
+}
