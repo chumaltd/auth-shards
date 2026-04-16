@@ -30,7 +30,7 @@ serde_json = "1.0"
 server-conf = { git = "https://github.com/chumaltd/server-util.git" }
 sha2 = "0.10"
 hex = "0.4"
-hickory-resolver = "0.26.0-beta.3"
+hickory-resolver = "0.26.0"
 subtle = "2.6"
 thiserror = "2"
 tokio	= { version = "1.0", features = ["full"] }
