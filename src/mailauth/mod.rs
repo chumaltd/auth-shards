@@ -78,21 +78,21 @@ mod tests {
 
     #[tokio::test]
     async fn check_valid_email_returns_false_for_invalid_tld() {
-        assert_eq!(Ok(false), check_valid_email("user@example.invalid").await);
+        assert_eq!(Ok((false, "No records found: example.invalid".to_string())), check_valid_email("user@example.invalid").await);
     }
 
     #[tokio::test]
     async fn check_valid_email_returns_false_for_invalid_subdomain() {
-        assert_eq!(Ok(false), check_valid_email("user@mail.example.invalid").await);
+        assert_eq!(Ok((false, "No records found: mail.example.invalid".to_string())), check_valid_email("user@mail.example.invalid").await);
     }
 
     #[tokio::test]
     async fn check_valid_email_returns_false_for_missing_local_part() {
-        assert_eq!(Ok(false), check_valid_email("@example.com").await);
+        assert_eq!(Ok((false, "invalid addr-spec".to_string())), check_valid_email("@example.com").await);
     }
 
     #[tokio::test]
     async fn check_valid_email_returns_false_for_invalid_local_part_syntax() {
-        assert_eq!(Ok(false), check_valid_email("user..name@example.com").await);
+        assert_eq!(Ok((false, "invalid addr-spec".to_string())), check_valid_email("user..name@example.com").await);
     }
 }

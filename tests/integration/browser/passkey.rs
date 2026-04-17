@@ -6,15 +6,15 @@ use base64::prelude::*;
 use log::debug;
 use pg_pool::pg;
 use playwright_rs::expect;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use warp::Filter;
-use webauthn_rs::prelude::{CreationChallengeResponse as Challenge, Passkey};
+use webauthn_rs::prelude::Passkey;
 
 // Mock State to hold challenge data between requests
 pub(crate) struct MockState {
-    pub challenge: Option<Challenge>,
+    pub challenge: Option<Value>,
     pub reg_state: Option<String>, // RegState is String in generate_challenge_register
     pub user_id: Option<Uuid>,
     pub username: Option<String>,

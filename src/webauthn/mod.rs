@@ -9,6 +9,7 @@ use chrono::NaiveDateTime;
 use log::{debug, error};
 use pg_pool::{pg, pgr};
 use serde::{Deserialize, de::IgnoredAny};
+use serde_json::Value;
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_postgres::{row::Row, types::Type};
@@ -19,6 +20,7 @@ use webauthn_rs::{
         AuthenticationResult, CreationChallengeResponse, CredentialID, DiscoverableAuthentication,
         DiscoverableKey, Passkey, PasskeyAuthentication, PasskeyRegistration, PublicKeyCredential,
         RegisterPublicKeyCredential, RequestChallengeResponse,
+        WebauthnError,
     },
 };
 
@@ -51,7 +53,7 @@ pub async fn generate_challenge_register(
     check_duplicate: bool,
     uid: Uuid,
     max_count: u8,
-) -> Result<(CreationChallengeResponse, String), WebAuthnError> {
+) -> Result<(Value, String), WebAuthnError> {
     generate_challenge_register_with_mode(
         wa,
         check_duplicate,
@@ -68,7 +70,7 @@ pub async fn generate_challenge_register_with_mode(
     uid: Uuid,
     max_count: u8,
     mode: RegisterMode,
-) -> Result<(CreationChallengeResponse, String), WebAuthnError> {
+) -> Result<(Value, String), WebAuthnError> {
     let rows = pgr::query(
         r#"SELECT u.name, u.email, count(w.id)::smallint AS keys
          FROM users u LEFT JOIN webauthns w on u.id = w.user_id
@@ -96,6 +98,10 @@ pub async fn generate_challenge_register_with_mode(
     let registration = match mode {
         RegisterMode::PlatformPasskey => {
             wa.start_passkey_registration(uid, &uname, &udisp, credentials)
+                .and_then(|(challenge_res, reg_state)| {
+                    let challenge = rewrite_passkey_requirements(&challenge_res)?;
+                    Ok((challenge, reg_state))
+                })
         }
         RegisterMode::AndroidGooglePasswordManager => wa
             .start_google_passkey_in_google_password_manager_only_registration(
@@ -103,7 +109,12 @@ pub async fn generate_challenge_register_with_mode(
                 &uname,
                 &udisp,
                 credentials,
-            ),
+            )
+            .and_then(|(challenge_res, reg_state)| {
+                let challenge = serde_json::to_value(&challenge_res)
+                    .map_err(WebauthnError::ParseJSONFailure)?;
+                Ok((challenge, reg_state))
+            })
     };
 
     let (challenge_res, reg_state) = registration.map_err(|e| {
@@ -111,9 +122,30 @@ pub async fn generate_challenge_register_with_mode(
         WebAuthnError::Rejected
     })?;
     // NOTE: feature danger-allow-state-serialisation required
-    let reg_json = serde_json::to_string(&reg_state).map_err(|_e| WebAuthnError::Serde)?;
+    let reg_json = serde_json::to_string(&reg_state)
+        .map_err(|_e| WebAuthnError::Serde)?;
 
     Ok((challenge_res, reg_json))
+}
+
+fn rewrite_passkey_requirements(challenge: &CreationChallengeResponse) -> Result<Value, WebauthnError> {
+    let mut challenge = serde_json::to_value(&challenge)
+        .map_err(WebauthnError::ParseJSONFailure)?;
+    let selection = challenge.get_mut("publicKey")
+        .and_then(Value::as_object_mut)
+        .and_then(|pk| pk.get_mut("authenticatorSelection"))
+        .and_then(Value::as_object_mut)
+        .ok_or(WebauthnError::Configuration)?;
+
+    selection.insert("residentKey".into(), Value::String("required".into()));
+    selection.insert("requireResidentKey".into(), Value::Bool(true));
+    selection.insert("userVerification".into(), Value::String("required".into()));
+    selection.insert(
+        "authenticatorAttachment".into(),
+        Value::String("platform".into()),
+    );
+    
+    Ok(challenge)
 }
 
 pub async fn try_generate_passkey(
