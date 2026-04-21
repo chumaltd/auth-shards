@@ -67,7 +67,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     }));
 
     let (port, _wa) = start_webauthn_server(state.clone()).await;
-    let (page, cdp_port) = get_chromium_page()
+    let page = get_chromium_page()
         .await
         .expect("Chromium browser is required for passkey browser tests");
 
@@ -77,8 +77,8 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
 
     page.goto(&reg_url, None).await.unwrap();
     setup_console_tracker(&page).await;
-    let _ws_stream =
-        crate::common::setup_chromium_virtual_authenticator(cdp_port, Some("localhost")).await;
+    let _virtual_authenticator =
+        crate::common::setup_chromium_virtual_authenticator(&page).await;
 
     page.goto(&reg_url, None).await.unwrap();
     let btn_l3 = page.locator("#btn-register").await;

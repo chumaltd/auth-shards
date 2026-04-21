@@ -14,7 +14,7 @@ async fn check_redirect(page: Page, port: u16) {
 
 crate::test! {
     async fn it_redirects_external_chromium() {
-        let (page, _cdp_port) = get_chromium_page()
+        let page = get_chromium_page()
             .await
             .expect("Chromium browser is required for this test");
 

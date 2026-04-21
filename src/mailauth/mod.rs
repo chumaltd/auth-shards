@@ -8,6 +8,8 @@ static DNS_RESOLVER: LazyLock<TokioResolver> = LazyLock::new(|| {
         .expect("failed to load system DNS config");
 
     let opts = builder.options_mut();
+    opts.timeout = Duration::from_millis(1500);
+    opts.attempts = 1;
     opts.cache_size = 10_000;
     opts.positive_min_ttl = Some(Duration::from_secs(60));
     opts.positive_max_ttl = Some(Duration::from_secs(300));

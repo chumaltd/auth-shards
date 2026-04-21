@@ -1,6 +1,6 @@
 [package]
 name = "auth-shards"
-version = "0.4.6"
+version = "0.4.7"
 authors = ["Chuma Takahiro <co.chuma@gmail.com>"]
 edition = "2024"
 
@@ -49,5 +49,3 @@ warp = { version = "0.4", features = ["server", "test"] }
 auth-shards = { path = ".", features = ["warp"] }
 reqwest = { version = "0.13", features = ["json", "blocking"] }
 tokio-stream = { version = "0.1", features = ["net"] }
-tokio-tungstenite = "0.28"
-futures-util = "0.3"
