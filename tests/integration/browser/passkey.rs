@@ -5,8 +5,8 @@ use auth_shards::webauthn::{
 use base64::prelude::*;
 use log::debug;
 use pg_pool::pg;
-use playwright_rs::expect;
-use serde_json::{json, Value};
+use playwright_rs::{AriaRole, GetByRoleOptions, Page, expect, expect_page};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 use warp::Filter;
@@ -77,11 +77,10 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
 
     page.goto(&reg_url, None).await.unwrap();
     setup_console_tracker(&page).await;
-    let _virtual_authenticator =
-        crate::common::setup_chromium_virtual_authenticator(&page).await;
+    let _virtual_authenticator = crate::common::setup_chromium_virtual_authenticator(&page).await;
 
     page.goto(&reg_url, None).await.unwrap();
-    let btn_l3 = page.locator("#btn-register").await;
+    let btn_l3 = button_by_name(&page, "Register").await;
     btn_l3.click(None).await.unwrap();
 
     // Check for errors early before expect timeout
@@ -92,11 +91,10 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         .to_be_visible()
         .await
         .unwrap();
-    assert!(
-        page.url().contains("passkey_registered"),
-        "[L3] Redirect failed, stuck on {}",
-        page.url()
-    );
+    expect_page(&page)
+        .to_have_url_regex("passkey_registered")
+        .await
+        .unwrap();
     {
         let lock = state.lock().unwrap();
         let expected = if challenge_via_url { 2 } else { 0 };
@@ -123,11 +121,8 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         lock.username = Some(email1.clone());
     }
     page.goto(&auth_url, None).await.unwrap();
-    expect(page.locator("#btn-auth").await)
-        .to_be_enabled()
-        .await
-        .unwrap();
-    let btn_auth = page.locator("#btn-auth").await;
+    let btn_auth = button_by_name(&page, "Authenticate").await;
+    expect(btn_auth.clone()).to_be_enabled().await.unwrap();
     btn_auth.click(None).await.unwrap();
 
     // Check for errors early
@@ -138,12 +133,10 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         .to_be_visible()
         .await
         .unwrap();
-
-    assert!(
-        page.url().contains("authenticated"),
-        "Auth 1 redirect failed, stuck on {}",
-        page.url()
-    );
+    expect_page(&page)
+        .to_have_url_regex("authenticated")
+        .await
+        .unwrap();
     {
         let lock = state.lock().unwrap();
         let expected = if challenge_via_url { 1 } else { 0 };
@@ -185,12 +178,10 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         .to_be_visible()
         .await
         .unwrap();
-
-    assert!(
-        page.url().contains("authenticated"),
-        "Auth 2 redirect failed, stuck on {}",
-        page.url()
-    );
+    expect_page(&page)
+        .to_have_url_regex("authenticated")
+        .await
+        .unwrap();
     {
         let lock = state.lock().unwrap();
         let expected = if challenge_via_url { 2 } else { 0 };
@@ -201,6 +192,18 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     }
 
     crate::assert_no_console_errors!(&page);
+}
+
+async fn button_by_name(page: &Page, name: &str) -> playwright_rs::Locator {
+    page.get_by_role(
+        AriaRole::Button,
+        Some(GetByRoleOptions {
+            name: Some(name.to_string()),
+            exact: Some(true),
+            ..Default::default()
+        }),
+    )
+    .await
 }
 
 fn escape_html_attr(value: &str) -> String {

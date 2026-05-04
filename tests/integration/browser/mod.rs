@@ -1,5 +1,5 @@
 use crate::common::{get_chromium_page, get_webkit_page};
-use playwright_rs::Page;
+use playwright_rs::{Page, expect_page};
 use warp::Filter;
 
 mod passkey; // Register the new module
@@ -7,9 +7,10 @@ mod passkey; // Register the new module
 async fn check_redirect(page: Page, port: u16) {
     let url = format!("http://127.0.0.1:{}/redirect", port);
     page.goto(&url, None).await.expect("Failed to goto");
-    let current_url = page.url();
-
-    assert_eq!(current_url, "https://example.com/target");
+    expect_page(&page)
+        .to_have_url("https://example.com/target")
+        .await
+        .expect("redirect URL");
 }
 
 crate::test! {
