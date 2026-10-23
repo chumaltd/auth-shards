@@ -25,7 +25,6 @@ use openidconnect::{
         CoreIdTokenClaims, CoreIdTokenVerifier,
     },
     url::Url,
-    reqwest,
 };
 use serde::{Serialize, Deserialize};
 use server_conf::SV_CONF;
@@ -82,8 +81,6 @@ pub type GoogleClient<
 
 #[derive(Error, Debug)]
 pub enum GoogleOpenidError {
-    #[error("HTTP client generation failed")]
-    HttpClient,
     #[error("{category:?} URL is invalid")]
     InvalidUrl {
         category: String
@@ -146,11 +143,19 @@ pub fn verified_token_claims(
         .map_err(|_e| GoogleOpenidError::Verification)
 }
 
-pub async fn client_factory(
+/// Discovers Google's provider metadata using the caller's HTTP client.
+///
+/// The caller selects the TLS backend and certificate store. Configure the HTTP
+/// client not to follow redirects, and reuse it for [`exchange_code`].
+pub async fn client_factory<'a, C>(
     google_client_id: impl Into<String>,
     google_client_secret: impl Into<String>,
     callback_path: impl Into<String> + std::fmt::Display,
-) -> Result<(GoogleClient, reqwest::Client), GoogleOpenidError> {
+    http_client: &'a C,
+) -> Result<GoogleClient, GoogleOpenidError>
+where
+    C: AsyncHttpClient<'a>,
+{
     let issuer_url = IssuerUrl::new("https://accounts.google.com".to_string())
         .map_err(|e| {
             error!("{e}");
@@ -173,15 +178,7 @@ pub async fn client_factory(
             }
         })?;
 
-    let http_client = reqwest::ClientBuilder::new()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| {
-            error!("{e}");
-            GoogleOpenidError::HttpClient
-        })?;
-
-    let provider_metadata = GoogleProviderMetadata::discover_async(issuer_url, &http_client)
+    let provider_metadata = GoogleProviderMetadata::discover_async(issuer_url, http_client)
         .await.map_err(|e| {
             error!("{e}");
             GoogleOpenidError::MetadataDiscovery
@@ -207,5 +204,5 @@ pub async fn client_factory(
     )
         .set_redirect_uri(return_url)
         .set_revocation_url(revocation_url);
-    Ok((client, http_client))
+    Ok(client)
 }
