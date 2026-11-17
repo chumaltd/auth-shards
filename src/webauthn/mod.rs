@@ -616,7 +616,7 @@ pub async fn authenticate_discoverable_passkey(
         WebAuthnError::Serde
     })?;
     let cred_id = BASE64_URL_SAFE_NO_PAD.encode(raw_id.as_ref() as &[u8]);
-    let authorization = wa.finish_discoverable_authentication(&rsp, auth_st, &vec![cred.into()]);
+    let authorization = wa.finish_discoverable_authentication_v2(&rsp, auth_st, &cred);
     if authorization.is_err() {
         login_trace(
             uid.clone(),
