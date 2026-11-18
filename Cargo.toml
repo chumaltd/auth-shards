@@ -14,7 +14,7 @@ warp = [ "dep:warp" ]
 addr-spec = "0.10"
 anyhow = "1.0"
 async-session = "3"
-argon2 = "0.5"
+argon2 = "0.6"
 base64 = "0.23"
 bcrypt = { version = "0.19", optional = true }
 chrono = "0.4"
@@ -43,8 +43,8 @@ webauthn-rs-device-catalog = "0.5.0-20230418"
 x509-parser = "0.18"
 
 [dev-dependencies]
-fs4 = "0.13.1"
-playwright-rs = "0.12.3"
+fs4 = "1"
+playwright-rs = "0.21"
 warp = { version = "0.4", features = ["server", "test"] }
 auth-shards = { path = ".", features = ["warp"] }
 reqwest = { version = "0.13", features = ["json", "blocking"] }

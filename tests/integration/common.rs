@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use tokio::net::TcpListener;
-use fs4::fs_std::FileExt;
+use fs4::FileExt;
 
 
 pub struct TestPool;
@@ -43,16 +43,16 @@ where F: FnOnce(&mut File) -> R
             .open(LOCK_FILE)
             .expect("Failed to open lock file");
 
-        if file.lock_exclusive().is_err() {
+        if FileExt::lock(&file).is_err() {
             panic!("Failed to lock file");
         }
 
         if std::fs::metadata(LOCK_FILE).is_ok() {
              let result = f(&mut file);
-             file.unlock().ok();
+             FileExt::unlock(&file).ok();
              return result;
         } else {
-             file.unlock().ok();
+             FileExt::unlock(&file).ok();
              continue;
         }
     }

@@ -80,14 +80,14 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     let _virtual_authenticator = crate::common::setup_chromium_virtual_authenticator(&page).await;
 
     page.goto(&reg_url, None).await.unwrap();
-    let btn_l3 = button_by_name(&page, "Register").await;
+    let btn_l3 = button_by_name(&page, "Register");
     btn_l3.click(None).await.unwrap();
 
     // Check for errors early before expect timeout
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     crate::assert_no_console_errors!(&page);
 
-    expect(page.locator("body#account").await)
+    expect(page.locator("body#account"))
         .to_be_visible()
         .await
         .unwrap();
@@ -110,7 +110,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     .await
     .unwrap();
     let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
-    assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
+    let registered_public_key = passkey.get_public_key().clone();
 
     // --- Authentication - EXPLICIT BUTTON CLICK ---
     let auth_url = format!(
@@ -121,7 +121,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
         lock.username = Some(email1.clone());
     }
     page.goto(&auth_url, None).await.unwrap();
-    let btn_auth = button_by_name(&page, "Authenticate").await;
+    let btn_auth = button_by_name(&page, "Authenticate");
     expect(btn_auth.clone()).to_be_enabled().await.unwrap();
     btn_auth.click(None).await.unwrap();
 
@@ -129,7 +129,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     crate::assert_no_console_errors!(&page);
 
-    expect(page.locator("body#account").await)
+    expect(page.locator("body#account"))
         .to_be_visible()
         .await
         .unwrap();
@@ -159,7 +159,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     .await
     .unwrap();
     let passkey: Passkey = serde_json::from_value(row1.get::<_, serde_json::Value>(0)).unwrap();
-    assert!(passkey.get_public_key().get_openssl_pkey().is_ok());
+    assert_eq!(passkey.get_public_key(), &registered_public_key);
 
     // --- Authentication - CONDITIONAL UI ---
     {
@@ -174,7 +174,7 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     crate::assert_no_console_errors!(&page);
 
-    expect(page.locator("body#account").await)
+    expect(page.locator("body#account"))
         .to_be_visible()
         .await
         .unwrap();
@@ -194,16 +194,11 @@ async fn test_registers_and_authenticates_passkey(fallback: bool, challenge_via_
     crate::assert_no_console_errors!(&page);
 }
 
-async fn button_by_name(page: &Page, name: &str) -> playwright_rs::Locator {
+fn button_by_name(page: &Page, name: &str) -> playwright_rs::Locator {
     page.get_by_role(
         AriaRole::Button,
-        Some(GetByRoleOptions {
-            name: Some(name.to_string()),
-            exact: Some(true),
-            ..Default::default()
-        }),
+        Some(GetByRoleOptions::default().name(name).exact(true)),
     )
-    .await
 }
 
 fn escape_html_attr(value: &str) -> String {

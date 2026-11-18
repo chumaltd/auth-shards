@@ -2,11 +2,9 @@ use argon2::{
     Argon2,
     password_hash::{
         self,
-        rand_core::OsRng,
-        PasswordHash,
+        phc::PasswordHash,
         PasswordHasher,
         PasswordVerifier,
-        SaltString
     }
 };
 use log::error;
@@ -123,16 +121,15 @@ pub async fn try_update_password(
 pub fn verify_argon2<'a>(
     password: &'a str,
     stored_digest: &'a str
-) -> Result<(), password_hash::errors::Error> {
+) -> Result<(), password_hash::Error> {
     let parsed_hash = PasswordHash::new(&stored_digest)?;
     Argon2::default().verify_password(password.as_bytes(), &parsed_hash)
 }
 
 pub fn digest_argon2<'a>(
     password: &'a str
-) -> Result<String, password_hash::errors::Error> {
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default().hash_password(password.as_bytes(), &salt)?;
+) -> Result<String, password_hash::Error> {
+    let hash = Argon2::default().hash_password(password.as_bytes())?;
 
     Ok(hash.to_string())
 }

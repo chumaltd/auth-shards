@@ -401,7 +401,7 @@ async fn insert_sample_passkey(user_id: &Uuid) {
 fn sample_passkey(cred_id: Vec<u8>) -> Passkey {
     serde_json::from_value(json!({
         "cred": {
-            "cred_id": cred_id,
+            "cred_id": BASE64_URL_SAFE_NO_PAD.encode(&cred_id),
             "cred": {
                 "type_": "ES256",
                 "key": { "EC_EC2": {
